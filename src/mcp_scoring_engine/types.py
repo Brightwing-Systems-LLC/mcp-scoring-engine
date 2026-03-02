@@ -135,6 +135,7 @@ class ScoreResult:
     reliability_score: int | None = None
     maintenance_score: int | None = None
     security_score: int | None = None
+    agent_usability_score: int | None = None
 
     # Metadata
     flags: list[Flag] = field(default_factory=list)

@@ -1,6 +1,8 @@
 """Composite scoring engine for MCP server quality assessment.
 
-Combines data from all three tiers into a single 0-100 score:
+Combines data from multiple tiers into a single 0-100 score.
+
+Standard weights (no agent usability data):
 
   Category                Weight  Source
   ────────────────────    ──────  ──────────────────────────
@@ -10,10 +12,21 @@ Combines data from all three tiers into a single 0-100 score:
   Maintenance & Health    15%     Tier 1 static analysis
   Security & Permissions  20%     Tier 1 registry metadata
 
+Enhanced weights (with agent usability data):
+
+  Category                Weight  Source
+  ────────────────────    ──────  ──────────────────────────
+  Schema & Documentation  20%     Tier 1 static analysis
+  Protocol Compliance     18%     Tier 2 deep probe
+  Reliability             18%     Tier 3 fast probe history
+  Maintenance & Health    12%     Tier 1 static analysis
+  Security & Permissions  17%     Tier 1 registry metadata
+  Agent Usability         15%     Tier 4 multi-model LLM eval
+
 Score types:
   partial  — Only one data tier (shown on leaderboard, but no letter grade)
   full     — 2+ data tiers (static + probe data) — receives a letter grade
-  enhanced — Full + real agent feedback (future)
+  enhanced — Full + agent usability evaluation
 
 Grade thresholds (full/enhanced only):
   A+ 95-100 | A 85-94 | B 70-84 | C 55-69 | D 40-54 | F 0-39
@@ -36,12 +49,23 @@ from .types import (
 
 logger = logging.getLogger(__name__)
 
-# ── Category weights ──────────────────────────────────────────────────
+# ── Standard category weights (without agent usability) ──────────────
 WEIGHT_SCHEMA_DOCS = 0.25
 WEIGHT_PROTOCOL = 0.20
 WEIGHT_RELIABILITY = 0.20
 WEIGHT_MAINTENANCE = 0.15
 WEIGHT_SECURITY = 0.20
+
+# ── Enhanced category weights (with agent usability) ─────────────────
+WEIGHT_AGENT_USABILITY = 0.15
+_ENHANCED_WEIGHTS = {
+    "schema_docs": 0.20,
+    "protocol": 0.18,
+    "reliability": 0.18,
+    "maintenance": 0.12,
+    "security": 0.17,
+    "agent_usability": WEIGHT_AGENT_USABILITY,
+}
 
 # ── Grade thresholds ──────────────────────────────────────────────────
 GRADE_THRESHOLDS = [
@@ -302,10 +326,16 @@ def compute_score(
     static_result: StaticAnalysis | None = None,
     deep_probe: DeepProbeResult | None = None,
     reliability: ReliabilityData | None = None,
+    agent_usability: int | None = None,
 ) -> ScoreResult:
     """Compute composite MCP server quality score.
 
     Pure function — no side effects, no DB, no network.
+
+    When ``agent_usability`` is provided (0-100 int), enhanced weights are
+    used and the score type is promoted to "enhanced" (if the server already
+    qualifies for "full").  When ``None``, behaviour is identical to the
+    pre-agent-usability engine — standard weights, no promotion.
     """
     result = ScoreResult(
         server_info=server,
@@ -343,31 +373,57 @@ def compute_score(
     has_reliability = reliability_score is not None
 
     data_tiers = sum([has_static, has_deep, has_reliability])
-    score_type = "full" if data_tiers >= 2 else "partial"
+
+    has_agent_usability = agent_usability is not None
+    if data_tiers >= 2 and has_agent_usability:
+        score_type = "enhanced"
+    elif data_tiers >= 2:
+        score_type = "full"
+    else:
+        score_type = "partial"
+
+    # ── Select weight set ─────────────────────────────────────────────
+    use_enhanced = has_agent_usability
 
     # ── Compute weighted composite ────────────────────────────────────
     weighted_sum = 0.0
     total_weight = 0.0
 
-    if schema_docs is not None:
-        weighted_sum += schema_docs * WEIGHT_SCHEMA_DOCS
-        total_weight += WEIGHT_SCHEMA_DOCS
-
-    if protocol is not None:
-        weighted_sum += protocol * WEIGHT_PROTOCOL
-        total_weight += WEIGHT_PROTOCOL
-
-    if reliability_score is not None:
-        weighted_sum += reliability_score * WEIGHT_RELIABILITY
-        total_weight += WEIGHT_RELIABILITY
-
-    if maintenance is not None:
-        weighted_sum += maintenance * WEIGHT_MAINTENANCE
-        total_weight += WEIGHT_MAINTENANCE
-
-    if security is not None:
-        weighted_sum += security * WEIGHT_SECURITY
-        total_weight += WEIGHT_SECURITY
+    if use_enhanced:
+        w = _ENHANCED_WEIGHTS
+        if schema_docs is not None:
+            weighted_sum += schema_docs * w["schema_docs"]
+            total_weight += w["schema_docs"]
+        if protocol is not None:
+            weighted_sum += protocol * w["protocol"]
+            total_weight += w["protocol"]
+        if reliability_score is not None:
+            weighted_sum += reliability_score * w["reliability"]
+            total_weight += w["reliability"]
+        if maintenance is not None:
+            weighted_sum += maintenance * w["maintenance"]
+            total_weight += w["maintenance"]
+        if security is not None:
+            weighted_sum += security * w["security"]
+            total_weight += w["security"]
+        weighted_sum += agent_usability * w["agent_usability"]
+        total_weight += w["agent_usability"]
+    else:
+        if schema_docs is not None:
+            weighted_sum += schema_docs * WEIGHT_SCHEMA_DOCS
+            total_weight += WEIGHT_SCHEMA_DOCS
+        if protocol is not None:
+            weighted_sum += protocol * WEIGHT_PROTOCOL
+            total_weight += WEIGHT_PROTOCOL
+        if reliability_score is not None:
+            weighted_sum += reliability_score * WEIGHT_RELIABILITY
+            total_weight += WEIGHT_RELIABILITY
+        if maintenance is not None:
+            weighted_sum += maintenance * WEIGHT_MAINTENANCE
+            total_weight += WEIGHT_MAINTENANCE
+        if security is not None:
+            weighted_sum += security * WEIGHT_SECURITY
+            total_weight += WEIGHT_SECURITY
 
     if total_weight == 0:
         return result
@@ -386,14 +442,13 @@ def compute_score(
     result.reliability_score = reliability_score
     result.maintenance_score = maintenance
     result.security_score = security
+    result.agent_usability_score = agent_usability
 
     # ── Generate badges ───────────────────────────────────────────────
     flag_dicts = [
         {"key": f.key, "severity": f.severity, "label": f.label, "description": f.description}
         for f in detected_flags
     ]
-    result.badges = generate_badges(
-        server, static_result, deep_probe, reliability, flag_dicts
-    )
+    result.badges = generate_badges(server, static_result, deep_probe, reliability, flag_dicts)
 
     return result

@@ -9,6 +9,7 @@ from mcp_scoring_engine import (
     compute_score,
     score_to_grade,
     GRADE_THRESHOLDS,
+    WEIGHT_AGENT_USABILITY,
     WEIGHT_SCHEMA_DOCS,
     WEIGHT_PROTOCOL,
     WEIGHT_RELIABILITY,
@@ -21,6 +22,7 @@ from mcp_scoring_engine.scoring import (
     _compute_reliability_score,
     _compute_maintenance_score,
     _compute_security_score,
+    _ENHANCED_WEIGHTS,
     is_verified_publisher,
     extract_publisher,
 )
@@ -154,8 +156,12 @@ class TestComputeSecurity:
         server = ServerInfo(
             registry_metadata={
                 "env_vars": [
-                    "API_KEY", "SECRET_TOKEN", "AUTH_PASS",
-                    "PRIVATE_KEY", "DB_PASSWORD", "REDIS_AUTH",
+                    "API_KEY",
+                    "SECRET_TOKEN",
+                    "AUTH_PASS",
+                    "PRIVATE_KEY",
+                    "DB_PASSWORD",
+                    "REDIS_AUTH",
                 ],
             },
         )
@@ -259,3 +265,129 @@ class TestExtractPublisher:
 
     def test_empty(self):
         assert extract_publisher(ServerInfo()) == ""
+
+
+class TestAgentUsability:
+    """Tests for the agent_usability parameter on compute_score()."""
+
+    def test_none_agent_usability_unchanged(
+        self, clean_server, full_static, full_deep_probe, full_reliability
+    ):
+        """Passing agent_usability=None produces identical results to omitting it."""
+        result_without = compute_score(clean_server, full_static, full_deep_probe, full_reliability)
+        result_with_none = compute_score(
+            clean_server,
+            full_static,
+            full_deep_probe,
+            full_reliability,
+            agent_usability=None,
+        )
+        assert result_without.composite_score == result_with_none.composite_score
+        assert result_without.grade == result_with_none.grade
+        assert result_without.score_type == result_with_none.score_type
+        assert result_with_none.agent_usability_score is None
+
+    def test_full_becomes_enhanced(
+        self, clean_server, full_static, full_deep_probe, full_reliability
+    ):
+        """Full score + agent_usability → enhanced score type."""
+        result = compute_score(
+            clean_server,
+            full_static,
+            full_deep_probe,
+            full_reliability,
+            agent_usability=80,
+        )
+        assert result.score_type == "enhanced"
+        assert result.grade != ""
+        assert result.agent_usability_score == 80
+
+    def test_partial_never_becomes_enhanced(self, clean_server, full_static):
+        """Partial (1 tier) + agent_usability stays partial."""
+        result = compute_score(
+            clean_server,
+            full_static,
+            agent_usability=90,
+        )
+        assert result.score_type == "partial"
+        assert result.grade == ""
+        assert result.agent_usability_score == 90
+
+    def test_no_agent_stays_full(
+        self, clean_server, full_static, full_deep_probe, full_reliability
+    ):
+        """Without agent_usability, score stays full."""
+        result = compute_score(
+            clean_server,
+            full_static,
+            full_deep_probe,
+            full_reliability,
+        )
+        assert result.score_type == "full"
+        assert result.agent_usability_score is None
+
+    def test_enhanced_weights_sum_to_one(self):
+        """Enhanced weight allocation must sum to 1.0."""
+        total = sum(_ENHANCED_WEIGHTS.values())
+        assert abs(total - 1.0) < 0.001
+
+    def test_standard_weights_sum_to_one(self):
+        """Standard weight allocation must sum to 1.0."""
+        total = (
+            WEIGHT_SCHEMA_DOCS
+            + WEIGHT_PROTOCOL
+            + WEIGHT_RELIABILITY
+            + WEIGHT_MAINTENANCE
+            + WEIGHT_SECURITY
+        )
+        assert abs(total - 1.0) < 0.001
+
+    def test_agent_usability_affects_composite(
+        self, clean_server, full_static, full_deep_probe, full_reliability
+    ):
+        """High agent_usability pushes composite up vs low agent_usability."""
+        result_high = compute_score(
+            clean_server,
+            full_static,
+            full_deep_probe,
+            full_reliability,
+            agent_usability=100,
+        )
+        result_low = compute_score(
+            clean_server,
+            full_static,
+            full_deep_probe,
+            full_reliability,
+            agent_usability=0,
+        )
+        assert result_high.composite_score > result_low.composite_score
+
+    def test_agent_usability_weight_constant(self):
+        """WEIGHT_AGENT_USABILITY matches the enhanced weights dict."""
+        assert WEIGHT_AGENT_USABILITY == _ENHANCED_WEIGHTS["agent_usability"]
+        assert WEIGHT_AGENT_USABILITY == 0.15
+
+    def test_enhanced_score_with_missing_categories(self, clean_server, full_static):
+        """Enhanced scoring works even when some standard categories are missing."""
+        result = compute_score(
+            clean_server,
+            full_static,
+            deep_probe=None,
+            reliability=None,
+            agent_usability=75,
+        )
+        # Only 1 standard tier (static), so stays partial even with agent_usability
+        assert result.score_type == "partial"
+        assert result.composite_score is not None
+        assert result.agent_usability_score == 75
+
+    def test_enhanced_two_tiers_plus_agent(self, clean_server, full_static, full_deep_probe):
+        """Two standard tiers + agent_usability = enhanced."""
+        result = compute_score(
+            clean_server,
+            full_static,
+            full_deep_probe,
+            agent_usability=70,
+        )
+        assert result.score_type == "enhanced"
+        assert result.grade != ""
