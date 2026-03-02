@@ -1,6 +1,6 @@
 """Lightweight GitHub API client for public repository analysis.
 
-Uses GITHUB_TOKEN env var for 5,000 req/hr,
+Uses GITHUB_PUBLIC_TOKEN env var for 5,000 req/hr,
 or falls back to unauthenticated access (60 req/hr).
 """
 
@@ -24,7 +24,7 @@ class GitHubRateLimitExhausted(Exception):
 
 
 def _get_headers() -> dict:
-    token = os.environ.get("GITHUB_TOKEN", "")
+    token = os.environ.get("GITHUB_PUBLIC_TOKEN", "")
     headers = {
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
