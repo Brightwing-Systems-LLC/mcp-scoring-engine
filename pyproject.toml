@@ -1,9 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "mcp-scoring-engine"
-version = "0.1.0"
+version = "0.1.2"
 description = "Scoring engine for MCP server quality assessment"
-requires-python = ">=3.12"
+readme = "README.md"
 license = "MIT"
+requires-python = ">=3.12"
+authors = [
+    { name = "Brightwing Systems LLC", email = "support@brightwingsystems.com" },
+]
+keywords = ["mcp", "scoring", "quality", "model-context-protocol", "ai"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+]
 dependencies = [
     "mcp>=1.26",
     "httpx",
@@ -17,9 +35,9 @@ dev = [
     "respx>=0.22",
 ]
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+[project.urls]
+Homepage = "https://mcpscoreboard.com"
+Repository = "https://github.com/Brightwing-Systems-LLC/mcp-scoring-engine"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcp_scoring_engine"]

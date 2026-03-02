@@ -239,9 +239,6 @@ def _compute_security_score(server: ServerInfo) -> int | None:
     meta = server.registry_metadata or {}
     env_vars = meta.get("env_vars", [])
 
-    if not meta:
-        return None
-
     secret_pattern = re.compile(
         r"(api[_-]?key|secret|token|password|auth|credential|private[_-]?key)",
         re.IGNORECASE,

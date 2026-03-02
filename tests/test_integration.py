@@ -158,10 +158,10 @@ def test_github_only_mode():
     assert result.maintenance_score is not None
 
 
-def test_no_data_returns_none():
-    """Server with no data produces no score."""
+def test_no_data_returns_partial_score():
+    """Server with no data still gets a security-only partial score."""
     server = ServerInfo()
     result = compute_score(server)
-    assert result.composite_score is None
+    assert result.composite_score is not None
     assert result.grade == ""
-    assert result.score_type == ""
+    assert result.score_type == "partial"

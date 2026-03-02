@@ -136,7 +136,9 @@ class TestComputeSecurity:
 
     def test_no_metadata(self):
         server = ServerInfo()
-        assert _compute_security_score(server) is None
+        score = _compute_security_score(server)
+        assert score is not None
+        assert 0 <= score <= 100
 
     def test_stdio_server(self):
         server = ServerInfo(
@@ -190,7 +192,8 @@ class TestComputeScore:
     def test_no_data(self):
         server = ServerInfo()
         result = compute_score(server)
-        assert result.composite_score is None
+        assert result.composite_score is not None
+        assert result.score_type == "partial"
 
     def test_score_clamped(self, clean_server, full_static, full_deep_probe, full_reliability):
         result = compute_score(clean_server, full_static, full_deep_probe, full_reliability)
