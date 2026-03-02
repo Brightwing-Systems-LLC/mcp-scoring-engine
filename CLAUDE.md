@@ -35,8 +35,16 @@ Publishing is automated via GitHub Actions. The workflow (`.github/workflows/pub
 
 ### Requirements
 
-- The repo must have a `PYPI_API_TOKEN` secret configured in GitHub Settings > Secrets and variables > Actions
-- The token must have upload permissions for the `mcp-scoring-engine` project on PyPI
+The workflow uses PyPI trusted publishing (OIDC). This requires:
+
+1. On PyPI: go to the `mcp-scoring-engine` project > Settings > Publishing > add a "GitHub" trusted publisher:
+   - Owner: `Brightwing-Systems-LLC`
+   - Repository: `mcp-scoring-engine`
+   - Workflow: `publish.yml`
+   - Environment: `pypi`
+2. On GitHub: go to repo Settings > Environments > create an environment named `pypi`
+
+Alternatively, set a `PYPI_API_TOKEN` secret in GitHub Settings > Secrets — the workflow also accepts a token via the `password` field as a fallback.
 
 ### Manual publish (fallback)
 

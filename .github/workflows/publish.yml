@@ -7,10 +7,14 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/mcp-scoring-engine/
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
