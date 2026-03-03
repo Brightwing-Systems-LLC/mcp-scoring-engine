@@ -110,6 +110,55 @@ class TestComputeProtocol:
         score = _compute_protocol_score(probe)
         assert score == 63
 
+    def test_auth_discovery_bonus(self):
+        """auth_discovery_valid=True adds +10 to protocol score."""
+        probe = DeepProbeResult(
+            is_reachable=True,
+            schema_valid=True,
+            error_handling_score=60,
+            auth_discovery_valid=True,
+        )
+        # base: (100 + 100 + 60) / 3 = 86.67 → 86, +10 = 96
+        score = _compute_protocol_score(probe)
+        assert score == 96
+
+    def test_auth_discovery_none_no_penalty(self):
+        """auth_discovery_valid=None does not affect protocol score."""
+        probe = DeepProbeResult(
+            is_reachable=True,
+            schema_valid=True,
+            error_handling_score=60,
+            auth_discovery_valid=None,
+        )
+        # base: (100 + 100 + 60) / 3 = 86.67 → 86, no bonus
+        score = _compute_protocol_score(probe)
+        assert score == 86
+
+    def test_auth_discovery_false_no_bonus(self):
+        """auth_discovery_valid=False (tried and failed) gets no bonus."""
+        probe = DeepProbeResult(
+            is_reachable=True,
+            schema_valid=True,
+            error_handling_score=60,
+            auth_discovery_valid=False,
+        )
+        # base: (100 + 100 + 60) / 3 = 86.67 → 86, no bonus
+        score = _compute_protocol_score(probe)
+        assert score == 86
+
+    def test_auth_discovery_capped_at_100(self):
+        """Auth bonus doesn't push score above 100."""
+        probe = DeepProbeResult(
+            is_reachable=True,
+            schema_valid=True,
+            error_handling_score=95,
+            fuzz_score=95,
+            auth_discovery_valid=True,
+        )
+        # base: (100 + 100 + 95 + 95) / 4 = 97.5 → 97, +10 = 107 → capped at 100
+        score = _compute_protocol_score(probe)
+        assert score == 100
+
 
 class TestComputeReliability:
     def test_full_data(self, full_reliability):

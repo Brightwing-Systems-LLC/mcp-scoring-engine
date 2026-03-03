@@ -196,6 +196,8 @@ def _compute_protocol_score(deep_probe: DeepProbeResult | None) -> int | None:
     """Compute Protocol Compliance category score.
 
     Components: reachability, schema validity, error handling, fuzz resilience.
+    Auth discovery bonus: +10 if auth_discovery_valid is True (capped at 100).
+    Servers without auth discovery are not penalized.
     """
     if deep_probe is None:
         return None
@@ -215,7 +217,13 @@ def _compute_protocol_score(deep_probe: DeepProbeResult | None) -> int | None:
 
     if not components:
         return None
-    return int(sum(components) / len(components))
+
+    base_score = sum(components) / len(components)
+
+    # Auth discovery bonus: reward servers that implement OAuth discovery
+    auth_bonus = 10 if deep_probe.auth_discovery_valid is True else 0
+
+    return min(100, int(base_score + auth_bonus))
 
 
 from .probes.reliability import (
