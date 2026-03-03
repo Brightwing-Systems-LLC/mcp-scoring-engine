@@ -428,91 +428,152 @@ def _probe_provenance_signals(
 def _probe_maintenance_pulse(
     repo: dict, commits: list | None, releases: list | None
 ) -> tuple[int, dict]:
-    """Assess whether the project is actively maintained."""
-    score = 0
-    details = {}
+    """Assess project maintenance using a three-signal model.
+
+    Signals:
+      1. Vitality (40 pts) — ongoing development activity, with a stability
+         floor so mature healthy projects aren't penalized for inactivity.
+      2. Release Discipline (30 pts) — tagged releases with semver.
+      3. Community Health (30 pts) — stars, forks, issue responsiveness.
+
+    Total: 100 pts max.
+    """
+    details: dict = {}
     now = datetime.now(timezone.utc)
 
+    stars = repo.get("stargazers_count", 0)
+    forks = repo.get("forks_count", 0)
+    open_issues = repo.get("open_issues_count", 0)
+    has_any_release = bool(releases)
+
+    details["stars"] = stars
+    details["forks"] = forks
+    details["open_issues"] = open_issues
+
+    # ── Signal 1: Vitality (40 pts max) ──────────────────────────────
+
+    vitality = 0
+
+    # Push recency (base points)
     pushed_at = repo.get("pushed_at")
+    days_since_push = None
     if pushed_at:
         last_push = datetime.fromisoformat(pushed_at.replace("Z", "+00:00"))
         days_since_push = (now - last_push).days
         details["days_since_last_push"] = days_since_push
 
-        if days_since_push <= 7:
-            score += 30
-        elif days_since_push <= 30:
-            score += 25
+        if days_since_push <= 30:
+            vitality = 40
         elif days_since_push <= 90:
-            score += 15
+            vitality = 30
         elif days_since_push <= 180:
-            score += 10
+            vitality = 20
         elif days_since_push <= 365:
-            score += 5
+            vitality = 10
+        # >365 days: vitality = 0
 
-    if commits:
-        details["recent_commits"] = len(commits)
-        if len(commits) >= 20:
-            score += 20
-        elif len(commits) >= 10:
-            score += 15
-        elif len(commits) >= 5:
-            score += 10
-        elif len(commits) >= 1:
-            score += 5
+    # Stability floor: mature projects with evidence of health
+    # get minimum vitality even if inactive.
+    open_issues_ratio = open_issues / max(stars, 1) if stars > 0 else 0
+    is_stable = stars >= 50 and has_any_release and open_issues_ratio < 0.3
+    if is_stable and vitality < 20:
+        vitality = 20
+        details["stability_floor_applied"] = True
 
-        if len(commits) >= 3:
-            dates = []
-            for c in commits:
-                commit_data = c.get("commit", {}).get("committer", {})
-                date_str = commit_data.get("date", "")
-                if date_str:
-                    try:
-                        dates.append(
-                            datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-                        )
-                    except ValueError:
-                        pass
+    # Recent commits bonus (additive, up to cap of 40)
+    recent_commits = len(commits) if commits else 0
+    details["recent_commits"] = recent_commits
+    if recent_commits >= 10:
+        vitality = min(40, vitality + 10)
+    elif recent_commits >= 5:
+        vitality = min(40, vitality + 5)
 
-            if len(dates) >= 3:
-                dates.sort(reverse=True)
-                span = (dates[0] - dates[-1]).days
-                details["commit_span_days"] = span
-                if span >= 30:
-                    score += 10
-                    details["commit_pattern"] = "regular"
-                else:
-                    details["commit_pattern"] = "burst"
+    details["vitality"] = vitality
+
+    # ── Signal 2: Release Discipline (30 pts max) ────────────────────
+
+    release_pts = 0
 
     if releases:
         details["release_count"] = len(releases)
         if len(releases) >= 3:
-            score += 15
+            release_pts += 15
         elif len(releases) >= 1:
-            score += 10
+            release_pts += 10
 
+        # Recent release bonus
         latest_date = releases[0].get("published_at", "")
         if latest_date:
             try:
-                release_dt = datetime.fromisoformat(latest_date.replace("Z", "+00:00"))
+                release_dt = datetime.fromisoformat(
+                    latest_date.replace("Z", "+00:00")
+                )
                 days_since = (now - release_dt).days
                 details["days_since_latest_release"] = days_since
                 if days_since <= 90:
-                    score += 10
+                    release_pts += 10
+                elif days_since <= 180:
+                    release_pts += 5
             except ValueError:
                 pass
 
-    open_issues = repo.get("open_issues_count", 0)
-    stars = repo.get("stargazers_count", 0)
-    details["open_issues"] = open_issues
-    if open_issues == 0:
-        score += 15
-    elif stars > 0 and open_issues / max(stars, 1) < 0.1:
-        score += 10
-    elif stars > 0 and open_issues / max(stars, 1) < 0.3:
-        score += 5
+        # Release notes bonus
+        has_notes = any(
+            bool((r.get("body") or "").strip()) for r in releases[:3]
+        )
+        if has_notes:
+            release_pts += 5
+            details["has_release_notes"] = True
 
-    return min(score, 100), details
+    release_pts = min(release_pts, 30)
+    details["release_discipline"] = release_pts
+
+    # ── Signal 3: Community Health (30 pts max) ──────────────────────
+
+    # Stars (15 pts max)
+    if stars >= 1000:
+        star_pts = 15
+    elif stars >= 100:
+        star_pts = 12
+    elif stars >= 50:
+        star_pts = 10
+    elif stars >= 10:
+        star_pts = 5
+    else:
+        star_pts = 0
+
+    # Issue responsiveness (10 pts max)
+    # 0 issues = neutral (5 pts), not maximum — could mean unused
+    if open_issues == 0:
+        issue_pts = 5
+    elif open_issues_ratio < 0.05:
+        issue_pts = 10  # very responsive
+    elif open_issues_ratio < 0.1:
+        issue_pts = 7
+    elif open_issues_ratio < 0.3:
+        issue_pts = 3
+    else:
+        issue_pts = 0  # overwhelmed
+
+    # Forks (5 pts max)
+    if forks >= 50:
+        fork_pts = 5
+    elif forks >= 10:
+        fork_pts = 3
+    elif forks >= 1:
+        fork_pts = 1
+    else:
+        fork_pts = 0
+
+    community = star_pts + issue_pts + fork_pts
+    community = min(community, 30)
+    details["community_health"] = community
+    details["star_pts"] = star_pts
+    details["issue_pts"] = issue_pts
+    details["fork_pts"] = fork_pts
+
+    total = vitality + release_pts + community
+    return min(total, 100), details
 
 
 # ---------------------------------------------------------------------------
