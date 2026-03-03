@@ -23,6 +23,7 @@ class ServerInfo:
     registry_id: str = ""
     remote_endpoint_url: str = ""
     is_remote: bool = True
+    has_sandbox_probe: bool = False
     registry_metadata: dict = field(default_factory=dict)
     npm_url: str = ""
     pypi_url: str = ""

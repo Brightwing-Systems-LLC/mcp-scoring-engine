@@ -640,6 +640,56 @@ class TestLocalServerScoring:
         assert result.composite_score == 100
 
 
+class TestSandboxProbedScoring:
+    """Tests for local servers probed via Docker sandbox."""
+
+    def test_local_probed_with_protocol_is_full(self, full_static):
+        """Local probed server with schema + protocol + docs + security → full."""
+        server = ServerInfo(
+            name="local/probed",
+            is_remote=False,
+            has_sandbox_probe=True,
+            registry_metadata={"env_vars": []},
+            repo_url="https://github.com/test/probed",
+        )
+        deep = DeepProbeResult(
+            is_reachable=True,
+            schema_valid=True,
+            error_handling_score=80,
+            fuzz_score=70,
+        )
+        result = compute_score(server, static_result=full_static, deep_probe=deep)
+        assert result.score_type == "full"
+        assert result.grade != ""
+        assert result.protocol_score is not None
+
+    def test_local_probed_missing_protocol_is_partial(self, full_static):
+        """Local probed server without protocol data → partial (protocol is now applicable)."""
+        server = ServerInfo(
+            name="local/probed-no-protocol",
+            is_remote=False,
+            has_sandbox_probe=True,
+            registry_metadata={"env_vars": []},
+            repo_url="https://github.com/test/probed-no-proto",
+        )
+        result = compute_score(server, static_result=full_static)
+        assert result.score_type == "partial"
+        assert result.protocol_score is None
+
+    def test_unprobed_local_without_protocol_is_full(self, full_static):
+        """Unprobed local server without protocol → full (protocol not applicable)."""
+        server = ServerInfo(
+            name="local/unprobed",
+            is_remote=False,
+            has_sandbox_probe=False,
+            registry_metadata={"env_vars": []},
+            repo_url="https://github.com/test/unprobed",
+        )
+        result = compute_score(server, static_result=full_static)
+        assert result.score_type == "full"
+        assert result.grade != ""
+
+
 class TestFlagScoreCaps:
     """Critical flags must cap the composite score."""
 

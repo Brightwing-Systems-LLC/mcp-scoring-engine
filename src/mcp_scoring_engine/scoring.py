@@ -386,11 +386,16 @@ def compute_score(
         schema_quality = max(0, schema_quality - 15)
 
     # ── Determine score type (applicability-aware) ──────────────────
+    # Remote: 5 dimensions (schema, protocol, reliability, docs, security)
+    # Local (probed): 4 dimensions (+ protocol from sandbox probe)
+    # Local (unprobed): 3 dimensions (schema, docs, security)
     is_remote = getattr(server, "is_remote", True)
+    has_sandbox_probe = getattr(server, "has_sandbox_probe", False)
+    protocol_applicable = is_remote or has_sandbox_probe
     applicable = {
         "schema_quality": True,
-        "protocol": is_remote,
-        "reliability": is_remote,
+        "protocol": protocol_applicable,
+        "reliability": is_remote,  # Only remote has ongoing uptime monitoring
         "docs_maintenance": True,
         "security": True,
     }
