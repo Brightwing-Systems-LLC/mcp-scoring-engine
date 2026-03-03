@@ -8,11 +8,36 @@ from __future__ import annotations
 
 from ..types import ReliabilityData
 
+MINIMUM_PROBE_COUNT = 10  # Need at least 10 probes for a reliability score
+
+
+def _score_latency(ms: float) -> int:
+    """Continuous latency scoring via linear interpolation between anchors.
+
+    100ms → 100, 200ms → 90, 500ms → 70, 1000ms → 50, 2000ms → 25, 5000ms → 10.
+    """
+    if ms <= 100:
+        return 100
+    if ms >= 5000:
+        return 10
+    anchors = [(100, 100), (200, 90), (500, 70), (1000, 50), (2000, 25), (5000, 10)]
+    for i in range(len(anchors) - 1):
+        ms_lo, score_lo = anchors[i]
+        ms_hi, score_hi = anchors[i + 1]
+        if ms <= ms_hi:
+            ratio = (ms - ms_lo) / (ms_hi - ms_lo)
+            return int(score_lo + ratio * (score_hi - score_lo))
+    return 10
+
 
 def compute_reliability_score(data: ReliabilityData) -> int | None:
     """Compute reliability category score from pre-computed metrics.
 
-    Uptime contributes 70%, latency 30%.
+    Requires at least MINIMUM_PROBE_COUNT probes for a score (data quality gate).
+    Exception: CLI mode (probe_count=0, no uptime) skips the gate.
+
+    Blend: uptime 60% + p50 latency 25% + p95 latency 15%.
+    Falls back to uptime 70% + p50 30% when p95 is unavailable.
     If only latency available (CLI single-run), scores latency only.
     """
     if data is None:
@@ -21,24 +46,22 @@ def compute_reliability_score(data: ReliabilityData) -> int | None:
     if data.uptime_pct is None and data.latency_p50_ms is None:
         return None
 
-    # Latency scoring: <200ms=100, <500ms=80, <1000ms=60, <2000ms=40, else=20
-    latency_score = None
-    if data.latency_p50_ms is not None:
-        p50 = data.latency_p50_ms
-        if p50 < 200:
-            latency_score = 100
-        elif p50 < 500:
-            latency_score = 80
-        elif p50 < 1000:
-            latency_score = 60
-        elif p50 < 2000:
-            latency_score = 40
-        else:
-            latency_score = 20
+    # Data quality gate: need enough probes for a meaningful reliability score.
+    # Exception: CLI mode (probe_count=0, no uptime) skips the gate.
+    if data.probe_count > 0 and data.probe_count < MINIMUM_PROBE_COUNT:
+        return None
 
-    if data.uptime_pct is not None and latency_score is not None:
-        return int(data.uptime_pct * 0.7 + latency_score * 0.3)
+    p50_score = _score_latency(data.latency_p50_ms) if data.latency_p50_ms is not None else None
+    p95_score = _score_latency(data.latency_p95_ms) if data.latency_p95_ms is not None else None
+
+    if data.uptime_pct is not None and p50_score is not None:
+        # Full blend: uptime 60% + p50 25% + p95 15%
+        if p95_score is not None:
+            return int(data.uptime_pct * 0.60 + p50_score * 0.25 + p95_score * 0.15)
+        # No p95: uptime 70% + p50 30%
+        return int(data.uptime_pct * 0.70 + p50_score * 0.30)
     elif data.uptime_pct is not None:
         return int(data.uptime_pct)
     else:
-        return latency_score
+        # CLI mode: latency only
+        return p50_score

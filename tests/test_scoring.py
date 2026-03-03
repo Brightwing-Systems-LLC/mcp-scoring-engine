@@ -114,15 +114,18 @@ class TestComputeProtocol:
 class TestComputeReliability:
     def test_full_data(self, full_reliability):
         score = _compute_reliability_score(full_reliability)
-        # 98.5 * 0.7 + 100 * 0.3 = 68.95 + 30 = 98.95 → 98
-        assert score == 98
+        # p50=145→95, p95=380→78, uptime=98.5
+        # 98.5*0.60 + 95*0.25 + 78*0.15 = 59.1 + 23.75 + 11.7 = 94.55 → 94
+        assert score == 94
 
     def test_latency_only(self):
+        """CLI mode (probe_count=0): continuous latency scoring."""
         data = ReliabilityData(latency_p50_ms=150)
-        assert _compute_reliability_score(data) == 100
+        # 150ms → 95 (continuous interpolation)
+        assert _compute_reliability_score(data) == 95
 
     def test_uptime_only(self):
-        data = ReliabilityData(uptime_pct=95.0)
+        data = ReliabilityData(uptime_pct=95.0, probe_count=20)
         assert _compute_reliability_score(data) == 95
 
     def test_no_data(self):
@@ -131,13 +134,18 @@ class TestComputeReliability:
 
     def test_slow_latency(self):
         data = ReliabilityData(latency_p50_ms=2500)
-        assert _compute_reliability_score(data) == 20
+        # 2500ms → 22 (continuous)
+        assert _compute_reliability_score(data) == 22
 
-    def test_latency_tiers(self):
+    def test_continuous_latency(self):
+        """Continuous scoring — no 20-point cliffs at boundaries."""
         assert _compute_reliability_score(ReliabilityData(latency_p50_ms=100)) == 100
-        assert _compute_reliability_score(ReliabilityData(latency_p50_ms=300)) == 80
-        assert _compute_reliability_score(ReliabilityData(latency_p50_ms=700)) == 60
-        assert _compute_reliability_score(ReliabilityData(latency_p50_ms=1500)) == 40
+        # 300ms → ~83 (between 90@200ms and 70@500ms)
+        assert 82 <= _compute_reliability_score(ReliabilityData(latency_p50_ms=300)) <= 84
+        # 700ms → ~62 (between 70@500ms and 50@1000ms)
+        assert 60 <= _compute_reliability_score(ReliabilityData(latency_p50_ms=700)) <= 64
+        # 1500ms → ~37 (between 50@1000ms and 25@2000ms)
+        assert 35 <= _compute_reliability_score(ReliabilityData(latency_p50_ms=1500)) <= 40
 
 
 class TestComputeDocsMaintenance:

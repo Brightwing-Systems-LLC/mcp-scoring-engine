@@ -218,39 +218,10 @@ def _compute_protocol_score(deep_probe: DeepProbeResult | None) -> int | None:
     return int(sum(components) / len(components))
 
 
-def _compute_reliability_score(reliability: ReliabilityData | None) -> int | None:
-    """Compute Reliability category score from pre-computed metrics.
-
-    Uptime contributes 70%, latency 30%.
-    If only latency available (CLI single-run), scores latency only.
-    """
-    if reliability is None:
-        return None
-
-    if reliability.uptime_pct is None and reliability.latency_p50_ms is None:
-        return None
-
-    # Latency scoring: <200ms=100, <500ms=80, <1000ms=60, <2000ms=40, else=20
-    latency_score = None
-    if reliability.latency_p50_ms is not None:
-        p50 = reliability.latency_p50_ms
-        if p50 < 200:
-            latency_score = 100
-        elif p50 < 500:
-            latency_score = 80
-        elif p50 < 1000:
-            latency_score = 60
-        elif p50 < 2000:
-            latency_score = 40
-        else:
-            latency_score = 20
-
-    if reliability.uptime_pct is not None and latency_score is not None:
-        return int(reliability.uptime_pct * 0.7 + latency_score * 0.3)
-    elif reliability.uptime_pct is not None:
-        return int(reliability.uptime_pct)
-    else:
-        return latency_score
+from .probes.reliability import (
+    compute_reliability_score as _compute_reliability_score,
+    MINIMUM_PROBE_COUNT,
+)
 
 
 def _compute_docs_maintenance_score(static_result: StaticAnalysis) -> int | None:

@@ -11,6 +11,7 @@ from .probes.health import probe_server, probe_server_stdio
 from .probes.protocol import deep_probe_server, deep_probe_server_stdio
 from .probes.reliability import compute_reliability_score
 from .probes.static import analyze_repo
+from .probes.reliability import MINIMUM_PROBE_COUNT
 from .scoring import (
     compute_score,
     extract_publisher,
@@ -57,6 +58,7 @@ __all__ = [
     "extract_publisher",
     "FLAG_SCORE_CAPS",
     "GRADE_THRESHOLDS",
+    "MINIMUM_PROBE_COUNT",
     "VERIFIED_PUBLISHERS",
     "WEIGHT_AGENT_USABILITY",
     "WEIGHT_DOCS_MAINTENANCE",

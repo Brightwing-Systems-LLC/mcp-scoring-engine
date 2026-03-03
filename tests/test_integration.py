@@ -118,8 +118,8 @@ def test_cli_mode_latency_only():
         fuzz_score=70,
     )
 
-    # CLI mode: latency only, no uptime
-    reliability = ReliabilityData(latency_p50_ms=50, probe_count=1)
+    # CLI mode: latency only, no uptime (probe_count=0 is CLI default)
+    reliability = ReliabilityData(latency_p50_ms=50)
 
     result = compute_score(server, deep_probe=deep, reliability=reliability)
 
