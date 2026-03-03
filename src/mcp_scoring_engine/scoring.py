@@ -133,12 +133,23 @@ def score_to_grade(score: int) -> str:
     return "F"
 
 
-def is_verified_publisher(server: ServerInfo) -> bool:
-    """Check if server belongs to a verified publisher namespace."""
+def is_verified_publisher(
+    server: ServerInfo, verified_orgs: set[str] | None = None
+) -> bool:
+    """Check if server belongs to a verified publisher namespace.
+
+    Args:
+        server: Server to check.
+        verified_orgs: Optional set of verified org names. If None, uses
+            the hardcoded VERIFIED_PUBLISHERS constant (for CLI/standalone use).
+            The Django scoreboard passes the DB-sourced set.
+    """
+    orgs = verified_orgs if verified_orgs is not None else VERIFIED_PUBLISHERS
+
     rid = server.registry_id or ""
     if rid.startswith("@"):
         namespace = rid.split("/")[0].lstrip("@").lower()
-        if namespace in VERIFIED_PUBLISHERS:
+        if namespace in orgs:
             return True
 
     repo = server.repo_url or ""
@@ -146,7 +157,7 @@ def is_verified_publisher(server: ServerInfo) -> bool:
         parts = repo.rstrip("/").split("github.com/")
         if len(parts) > 1:
             org = parts[1].split("/")[0].lower()
-            if org in VERIFIED_PUBLISHERS:
+            if org in orgs:
                 return True
 
     return False
@@ -345,6 +356,7 @@ def compute_score(
     deep_probe: DeepProbeResult | None = None,
     reliability: ReliabilityData | None = None,
     agent_usability: int | None = None,
+    verified_orgs: set[str] | None = None,
 ) -> ScoreResult:
     """Compute composite MCP server quality score.
 
@@ -354,6 +366,9 @@ def compute_score(
     used and the score type is promoted to "enhanced" (if the server already
     qualifies for "full").  When ``None``, behaviour is identical to the
     pre-agent-usability engine — standard weights, no promotion.
+
+    ``verified_orgs``: Optional set of verified GitHub org names. If None,
+    uses the hardcoded VERIFIED_PUBLISHERS constant.
     """
     result = ScoreResult(
         server_info=server,
@@ -373,7 +388,7 @@ def compute_score(
     category, targets = classify_server(server)
     result.category = category
     result.targets = targets
-    result.verified_publisher = is_verified_publisher(server)
+    result.verified_publisher = is_verified_publisher(server, verified_orgs)
     result.publisher = extract_publisher(server)
 
     # ── Detect flags ──────────────────────────────────────────────────
