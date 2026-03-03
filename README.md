@@ -78,6 +78,28 @@ print(category)  # "finance"
 print(targets)   # ["Stripe"]
 ```
 
+### Detect entry points for stdio servers
+
+```python
+from mcp_scoring_engine import detect_entry_point, make_github_file_reader
+
+# With a GitHubPublicClient (from your own GitHub API code)
+file_reader = make_github_file_reader(client)
+tree = client.get_tree()
+
+result = detect_entry_point(tree, file_reader)
+# {"language": "python", "run_cmd": ["python", "-m", "my_server"],
+#  "install_cmd": "uv pip install -e .",
+#  "source": "pyproject.toml [project.scripts]", "confidence": "high"}
+```
+
+Entry point detection parses build metadata to infer how to run an MCP server:
+
+- **Python**: `pyproject.toml` scripts, `setup.cfg`/`setup.py` console_scripts, `__main__.py`
+- **Node**: `package.json` bin field, `scripts.start`, `main` field
+
+When called via `analyze_repo()`, detection piggybacks on the already-fetched file tree at zero extra API cost. The result is stored in `StaticAnalysis.details["entry_point"]`.
+
 ### Detect red flags
 
 ```python
@@ -142,6 +164,8 @@ The composite score is a weighted blend of five categories:
 | `deep_probe_server(url)` | Full protocol probe over HTTP → `DeepProbeResult` |
 | `deep_probe_server_stdio(command)` | Full protocol probe over stdio → `DeepProbeResult` |
 | `analyze_repo(repo_url)` | Static analysis of GitHub repo → `StaticAnalysis` |
+| `detect_entry_point(file_tree, file_reader)` | Detect how to run a server from repo metadata → `dict \| None` |
+| `make_github_file_reader(client)` | Create a file_reader callable from a GitHub API client → `Callable` |
 | `compute_reliability_score(data)` | Score from uptime + latency → `int` |
 
 ### Types
