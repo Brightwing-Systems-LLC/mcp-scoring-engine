@@ -73,7 +73,9 @@ class TestSensitiveCreds:
 class TestHighSecretDemand:
     def test_high_demand(self):
         server = ServerInfo(
-            registry_metadata={"env_vars": ["A", "B", "C", "D", "E"]}
+            registry_metadata={
+                "env_vars": ["API_KEY", "SECRET_TOKEN", "DB_HOST", "REDIS_URL", "STRIPE_KEY"]
+            }
         )
         flags = _check_high_secret_demand(server)
         assert len(flags) == 1
@@ -82,6 +84,34 @@ class TestHighSecretDemand:
     def test_normal(self):
         server = ServerInfo(registry_metadata={"env_vars": ["A", "B"]})
         assert len(_check_high_secret_demand(server)) == 0
+
+    def test_non_sensitive_vars_filtered(self):
+        """PORT, HOST, LOG_LEVEL don't count toward HIGH_SECRET_DEMAND."""
+        server = ServerInfo(
+            registry_metadata={
+                "env_vars": [
+                    "PORT", "HOST", "LOG_LEVEL", "DEBUG", "NODE_ENV",
+                    "WORKERS", "TIMEOUT", "API_KEY",
+                ]
+            }
+        )
+        # Only API_KEY is potentially sensitive (7 non-sensitive filtered out)
+        flags = _check_high_secret_demand(server)
+        assert len(flags) == 0
+
+    def test_mixed_sensitive_and_config(self):
+        """Mix of sensitive and config vars — only sensitive ones counted."""
+        server = ServerInfo(
+            registry_metadata={
+                "env_vars": [
+                    "PORT", "HOST", "API_KEY", "SECRET_TOKEN",
+                    "DB_PASSWORD", "AUTH_CREDENTIAL", "STRIPE_KEY",
+                ]
+            }
+        )
+        # 5 sensitive vars (API_KEY, SECRET_TOKEN, DB_PASSWORD, AUTH_CREDENTIAL, STRIPE_KEY)
+        flags = _check_high_secret_demand(server)
+        assert len(flags) == 1
 
 
 class TestRepoArchived:

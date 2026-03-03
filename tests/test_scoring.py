@@ -199,8 +199,8 @@ class TestComputeSecurity:
             repo_url="https://github.com/test/test",
         )
         score = _compute_security_score(server)
-        # 35 + 25 + 25 + 10 = 95
-        assert score == 95
+        # 35 + 25 + 25 + 12 (repo only) = 97
+        assert score == 97
 
     def test_many_secrets(self):
         server = ServerInfo(
@@ -218,6 +218,49 @@ class TestComputeSecurity:
         score = _compute_security_score(server)
         # 0 + 10 + 3 + 3 = 16
         assert score == 16
+
+    def test_distribution_clarity_repo_and_package(self):
+        """Source repo + published package → 15 pts (fully verifiable)."""
+        server = ServerInfo(
+            repo_url="https://github.com/test/test",
+            npm_url="https://www.npmjs.com/package/test",
+            registry_metadata={"env_vars": []},
+        )
+        score = _compute_security_score(server)
+        # 35 + 10 + 25 + 15 = 85
+        assert score == 85
+
+    def test_distribution_clarity_repo_only(self):
+        """Source repo only → 12 pts (auditable from source)."""
+        server = ServerInfo(
+            repo_url="https://github.com/test/test",
+            registry_metadata={"env_vars": []},
+        )
+        score = _compute_security_score(server)
+        # 35 + 10 + 25 + 12 = 82
+        assert score == 82
+
+    def test_distribution_clarity_package_only(self):
+        """Published package without source → 8 pts (can't verify)."""
+        server = ServerInfo(
+            npm_url="https://www.npmjs.com/package/test",
+            registry_metadata={"env_vars": []},
+        )
+        score = _compute_security_score(server)
+        # 35 + 10 + 25 + 8 = 78
+        assert score == 78
+
+    def test_mongo_uri_detected_as_high_sensitivity(self):
+        """MONGO_URI should be detected as high-sensitivity credential."""
+        server = ServerInfo(
+            registry_metadata={"env_vars": ["MONGO_URI", "PORT"]},
+        )
+        score = _compute_security_score(server)
+        # secret: 0 sensitive → 35, transport: remote → 10
+        # cred: 1 high_sens (MONGO_URI) → 10, dist: 3
+        # But MONGO_URI doesn't match secret_pattern, PORT doesn't either
+        # So: secret=35, transport=10, cred=10 (1 high_sens), dist=3 → 58
+        assert score == 58
 
 
 class TestComputeScore:

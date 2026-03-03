@@ -259,7 +259,7 @@ def _compute_security_score(server: ServerInfo) -> int | None:
     - Secret env var count (35pts)
     - Transport risk (25pts)
     - Credential sensitivity (25pts)
-    - Package type risk (15pts)
+    - Distribution clarity (15pts)
     """
     import re
 
@@ -297,7 +297,11 @@ def _compute_security_score(server: ServerInfo) -> int | None:
 
     # 3. Credential sensitivity (25 pts)
     high_sensitivity = re.compile(
-        r"(private[_-]?key|database|db_|postgres|mysql|redis|aws_secret)",
+        r"(private[_-]?key|database|db_|postgres|mysql|redis|mongo"
+        r"|aws_secret|azure[_-]?secret|gcp[_-]?key|gcloud"
+        r"|stripe[_-]?secret|twilio|sendgrid"
+        r"|mongo[_-]?uri|connection[_-]?string"
+        r"|jwt[_-]?secret|encryption[_-]?key|ssh[_-]?key|ssl[_-]?cert)",
         re.IGNORECASE,
     )
     high_sens_count = len([v for v in env_vars if high_sensitivity.search(v)])
@@ -310,17 +314,20 @@ def _compute_security_score(server: ServerInfo) -> int | None:
     else:
         cred_score = 3
 
-    # 4. Package type risk (15 pts)
+    # 4. Distribution clarity (15 pts)
+    # Can users verify what they're installing?
     has_package = bool(server.npm_url or server.pypi_url or server.dockerhub_url)
     has_repo = bool(server.repo_url)
-    if has_package:
-        package_score = 15
+    if has_package and has_repo:
+        dist_score = 15  # Verifiable: published + source available
     elif has_repo:
-        package_score = 10
+        dist_score = 12  # Fully auditable from source
+    elif has_package:
+        dist_score = 8  # Published but can't verify source
     else:
-        package_score = 3
+        dist_score = 3
 
-    total = secret_score + transport_score + cred_score + package_score
+    total = secret_score + transport_score + cred_score + dist_score
     return max(0, min(100, total))
 
 

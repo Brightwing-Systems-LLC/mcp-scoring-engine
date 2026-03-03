@@ -121,17 +121,30 @@ def _check_sensitive_creds(server: ServerInfo) -> list[Flag]:
     return []
 
 
+_NON_SENSITIVE_PATTERN = re.compile(
+    r"^(port|host|log[_-]?level|debug|workers?|timeout|env|node[_-]?env"
+    r"|base[_-]?url|app[_-]?name|version|region|locale|lang(uage)?)$",
+    re.IGNORECASE,
+)
+
+
 def _check_high_secret_demand(server: ServerInfo) -> list[Flag]:
-    """Requires an unusually high number of env vars (5+)."""
+    """Requires an unusually high number of potentially-sensitive env vars (5+).
+
+    Filters out non-sensitive config vars (PORT, HOST, LOG_LEVEL, etc.)
+    before counting.
+    """
     meta = server.registry_metadata or {}
     env_vars = meta.get("env_vars", [])
-    if len(env_vars) >= 5:
+    # Only count vars that could be sensitive (not PORT, HOST, etc.)
+    sensitive_vars = [v for v in env_vars if not _NON_SENSITIVE_PATTERN.match(v)]
+    if len(sensitive_vars) >= 5:
         return [
             Flag(
                 key="HIGH_SECRET_DEMAND",
                 severity="warning",
                 label="High Config Demand",
-                description=f"Requires {len(env_vars)} environment variables to configure.",
+                description=f"Requires {len(sensitive_vars)} potentially-sensitive environment variables.",
             )
         ]
     return []
