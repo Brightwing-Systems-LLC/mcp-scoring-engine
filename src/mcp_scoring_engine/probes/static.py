@@ -13,6 +13,7 @@ import re
 from datetime import datetime, timezone
 
 from ..types import StaticAnalysis
+from .entry_point import detect_entry_point, make_github_file_reader
 from .github_client import GitHubPublicClient
 
 logger = logging.getLogger(__name__)
@@ -95,6 +96,11 @@ def analyze_repo(
         ver_score, ver_details = _probe_version_hygiene(releases, tags)
         result.version_hygiene = ver_score
         result.details["version_hygiene"] = ver_details
+
+        # Entry point detection — piggybacks on already-fetched tree + client
+        entry_point = detect_entry_point(tree or [], make_github_file_reader(client))
+        if entry_point:
+            result.details["entry_point"] = entry_point
 
         return result
 

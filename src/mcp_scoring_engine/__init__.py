@@ -10,6 +10,7 @@ from .flags import detect_flags, FlagContext
 from .probes.health import probe_server, probe_server_stdio
 from .probes.protocol import deep_probe_server, deep_probe_server_stdio
 from .probes.reliability import compute_reliability_score
+from .probes.entry_point import detect_entry_point, make_github_file_reader
 from .probes.static import analyze_repo
 from .probes.reliability import MINIMUM_PROBE_COUNT
 from .scoring import (
@@ -74,6 +75,8 @@ __all__ = [
     "deep_probe_server",
     "deep_probe_server_stdio",
     "analyze_repo",
+    "detect_entry_point",
+    "make_github_file_reader",
     "compute_reliability_score",
     # Classification & Flags & Badges
     "classify_server",
