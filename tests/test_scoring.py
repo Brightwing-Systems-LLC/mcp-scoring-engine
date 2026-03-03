@@ -10,6 +10,8 @@ from mcp_scoring_engine import (
     score_to_grade,
     GRADE_THRESHOLDS,
     WEIGHT_AGENT_USABILITY,
+    WEIGHT_SCHEMA_QUALITY,
+    WEIGHT_DOCS_MAINTENANCE,
     WEIGHT_SCHEMA_DOCS,
     WEIGHT_PROTOCOL,
     WEIGHT_RELIABILITY,
@@ -17,6 +19,8 @@ from mcp_scoring_engine import (
     WEIGHT_SECURITY,
 )
 from mcp_scoring_engine.scoring import (
+    _compute_schema_quality_score,
+    _compute_docs_maintenance_score,
     _compute_schema_docs_score,
     _compute_protocol_score,
     _compute_reliability_score,
@@ -54,19 +58,32 @@ class TestScoreToGrade:
         assert score_to_grade(39) == "F"
 
 
-class TestComputeSchemaDocs:
-    def test_basic(self, full_static):
-        score = _compute_schema_docs_score(full_static)
-        expected = int((85 + 78 + 72) / 3)
+class TestComputeSchemaQuality:
+    def test_weighted_average(self, full_static):
+        """Schema quality = 60% schema_completeness + 40% description_quality."""
+        score = _compute_schema_quality_score(full_static)
+        # 85 * 0.60 + 78 * 0.40 = 51.0 + 31.2 = 82.2 → 82
+        expected = int(85 * 0.60 + 78 * 0.40)
         assert score == expected
 
     def test_all_zero(self):
-        static = StaticAnalysis(
-            schema_completeness=0,
-            description_quality=0,
-            documentation_coverage=0,
+        static = StaticAnalysis(schema_completeness=0, description_quality=0)
+        assert _compute_schema_quality_score(static) == 0
+
+    def test_documentation_coverage_excluded(self, full_static):
+        """documentation_coverage no longer affects schema quality."""
+        # Changing documentation_coverage should not change schema_quality
+        high_docs = StaticAnalysis(
+            schema_completeness=85, description_quality=78, documentation_coverage=100
         )
-        assert _compute_schema_docs_score(static) == 0
+        low_docs = StaticAnalysis(
+            schema_completeness=85, description_quality=78, documentation_coverage=0
+        )
+        assert _compute_schema_quality_score(high_docs) == _compute_schema_quality_score(low_docs)
+
+    def test_backward_compat_alias(self, full_static):
+        """_compute_schema_docs_score alias still works."""
+        assert _compute_schema_docs_score(full_static) == _compute_schema_quality_score(full_static)
 
 
 class TestComputeProtocol:
@@ -123,11 +140,36 @@ class TestComputeReliability:
         assert _compute_reliability_score(ReliabilityData(latency_p50_ms=1500)) == 40
 
 
-class TestComputeMaintenance:
-    def test_full_static(self, full_static):
-        score = _compute_maintenance_score(full_static)
-        expected = int((80 + 75 + 100 + 65) / 4)
+class TestComputeDocsMaintenance:
+    def test_weighted_blend(self, full_static):
+        """docs_maintenance = 30% doc_coverage + 30% maint_pulse + 15% dep_health + 15% license + 10% version."""
+        score = _compute_docs_maintenance_score(full_static)
+        # 72*0.30 + 80*0.30 + 75*0.15 + 100*0.15 + 65*0.10
+        # = 21.6 + 24.0 + 11.25 + 15.0 + 6.5 = 78.35 → 78
+        expected = int(72 * 0.30 + 80 * 0.30 + 75 * 0.15 + 100 * 0.15 + 65 * 0.10)
         assert score == expected
+
+    def test_includes_documentation_coverage(self, full_static):
+        """documentation_coverage is now part of docs_maintenance, not schema."""
+        high = StaticAnalysis(
+            documentation_coverage=100,
+            maintenance_pulse=80,
+            dependency_health=75,
+            license_clarity=100,
+            version_hygiene=65,
+        )
+        low = StaticAnalysis(
+            documentation_coverage=0,
+            maintenance_pulse=80,
+            dependency_health=75,
+            license_clarity=100,
+            version_hygiene=65,
+        )
+        assert _compute_docs_maintenance_score(high) > _compute_docs_maintenance_score(low)
+
+    def test_backward_compat_alias(self, full_static):
+        """_compute_maintenance_score alias still works."""
+        assert _compute_maintenance_score(full_static) == _compute_docs_maintenance_score(full_static)
 
 
 class TestComputeSecurity:
@@ -178,11 +220,14 @@ class TestComputeScore:
         assert 0 <= result.composite_score <= 100
         assert result.grade != ""
         assert result.score_type == "full"
-        assert result.schema_docs_score is not None
+        assert result.schema_quality_score is not None
         assert result.protocol_score is not None
         assert result.reliability_score is not None
-        assert result.maintenance_score is not None
+        assert result.docs_maintenance_score is not None
         assert result.security_score is not None
+        # Backward-compat aliases still work
+        assert result.schema_docs_score == result.schema_quality_score
+        assert result.maintenance_score == result.docs_maintenance_score
 
     def test_partial_score_static_only(self, clean_server, full_static):
         result = compute_score(clean_server, static_result=full_static)
@@ -335,13 +380,16 @@ class TestAgentUsability:
     def test_standard_weights_sum_to_one(self):
         """Standard weight allocation must sum to 1.0."""
         total = (
-            WEIGHT_SCHEMA_DOCS
+            WEIGHT_SCHEMA_QUALITY
             + WEIGHT_PROTOCOL
             + WEIGHT_RELIABILITY
-            + WEIGHT_MAINTENANCE
+            + WEIGHT_DOCS_MAINTENANCE
             + WEIGHT_SECURITY
         )
         assert abs(total - 1.0) < 0.001
+        # Backward-compat aliases match
+        assert WEIGHT_SCHEMA_DOCS == WEIGHT_SCHEMA_QUALITY
+        assert WEIGHT_MAINTENANCE == WEIGHT_DOCS_MAINTENANCE
 
     def test_agent_usability_affects_composite(
         self, clean_server, full_static, full_deep_probe, full_reliability
@@ -398,7 +446,7 @@ class TestLocalServerScoring:
     """Tests for applicability-aware scoring of local (stdio-only) servers."""
 
     def test_local_with_all_applicable_is_full(self, full_static):
-        """Local server with schema + maintenance + security → full with grade."""
+        """Local server with schema + docs_maintenance + security → full with grade."""
         server = ServerInfo(
             name="local/mcp-server",
             description="A local MCP server",
@@ -409,8 +457,8 @@ class TestLocalServerScoring:
         result = compute_score(server, static_result=full_static)
         assert result.score_type == "full"
         assert result.grade != ""
-        assert result.schema_docs_score is not None
-        assert result.maintenance_score is not None
+        assert result.schema_quality_score is not None
+        assert result.docs_maintenance_score is not None
         assert result.security_score is not None
         assert result.protocol_score is None
         assert result.reliability_score is None

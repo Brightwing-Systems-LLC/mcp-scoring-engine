@@ -59,19 +59,23 @@ from .types import (
 logger = logging.getLogger(__name__)
 
 # ── Standard category weights (without agent usability) ──────────────
-WEIGHT_SCHEMA_DOCS = 0.25
+WEIGHT_SCHEMA_QUALITY = 0.25
 WEIGHT_PROTOCOL = 0.20
 WEIGHT_RELIABILITY = 0.20
-WEIGHT_MAINTENANCE = 0.15
+WEIGHT_DOCS_MAINTENANCE = 0.15
 WEIGHT_SECURITY = 0.20
+
+# Backward-compatible aliases (deprecated)
+WEIGHT_SCHEMA_DOCS = WEIGHT_SCHEMA_QUALITY
+WEIGHT_MAINTENANCE = WEIGHT_DOCS_MAINTENANCE
 
 # ── Enhanced category weights (with agent usability) ─────────────────
 WEIGHT_AGENT_USABILITY = 0.15
 _ENHANCED_WEIGHTS = {
-    "schema_docs": 0.20,
+    "schema_quality": 0.20,
     "protocol": 0.18,
     "reliability": 0.18,
-    "maintenance": 0.12,
+    "docs_maintenance": 0.12,
     "security": 0.17,
     "agent_usability": WEIGHT_AGENT_USABILITY,
 }
@@ -167,23 +171,25 @@ def extract_publisher(server: ServerInfo) -> str:
     return ""
 
 
-def _compute_schema_docs_score(static_result: StaticAnalysis) -> int | None:
-    """Compute Schema & Documentation category score.
+def _compute_schema_quality_score(static_result: StaticAnalysis) -> int | None:
+    """Compute Schema Quality category score.
 
-    Averages schema_completeness, description_quality, documentation_coverage.
+    Weighted average of schema_completeness (60%) and description_quality (40%).
+    These measure whether tools are well-defined and clearly described.
     """
-    scores = [
-        s
-        for s in [
-            static_result.schema_completeness,
-            static_result.description_quality,
-            static_result.documentation_coverage,
-        ]
-        if s is not None
+    components = [
+        (static_result.schema_completeness, 0.60),
+        (static_result.description_quality, 0.40),
     ]
+    scores = [(s, w) for s, w in components if s is not None]
     if not scores:
         return None
-    return int(sum(scores) / len(scores))
+    total_weight = sum(w for _, w in scores)
+    return int(sum(s * w for s, w in scores) / total_weight)
+
+
+# Backward-compatible alias
+_compute_schema_docs_score = _compute_schema_quality_score
 
 
 def _compute_protocol_score(deep_probe: DeepProbeResult | None) -> int | None:
@@ -247,24 +253,32 @@ def _compute_reliability_score(reliability: ReliabilityData | None) -> int | Non
         return latency_score
 
 
-def _compute_maintenance_score(static_result: StaticAnalysis) -> int | None:
-    """Compute Maintenance & Health category score.
+def _compute_docs_maintenance_score(static_result: StaticAnalysis) -> int | None:
+    """Compute Documentation & Maintenance category score.
 
-    Averages maintenance_pulse, dependency_health, license_clarity, version_hygiene.
+    Weighted blend of project health signals:
+      documentation_coverage: 30%
+      maintenance_pulse:      30%
+      dependency_health:      15%
+      license_clarity:        15%
+      version_hygiene:        10%
     """
-    scores = [
-        s
-        for s in [
-            static_result.maintenance_pulse,
-            static_result.dependency_health,
-            static_result.license_clarity,
-            static_result.version_hygiene,
-        ]
-        if s is not None
+    components = [
+        (static_result.documentation_coverage, 0.30),
+        (static_result.maintenance_pulse, 0.30),
+        (static_result.dependency_health, 0.15),
+        (static_result.license_clarity, 0.15),
+        (static_result.version_hygiene, 0.10),
     ]
+    scores = [(s, w) for s, w in components if s is not None]
     if not scores:
         return None
-    return int(sum(scores) / len(scores))
+    total_weight = sum(w for _, w in scores)
+    return int(sum(s * w for s, w in scores) / total_weight)
+
+
+# Backward-compatible alias
+_compute_maintenance_score = _compute_docs_maintenance_score
 
 
 def _compute_security_score(server: ServerInfo) -> int | None:
@@ -363,10 +377,10 @@ def compute_score(
     )
 
     # ── Compute category scores ───────────────────────────────────────
-    schema_docs = _compute_schema_docs_score(static_result) if static_result else None
+    schema_quality = _compute_schema_quality_score(static_result) if static_result else None
     protocol = _compute_protocol_score(deep_probe)
     reliability_score = _compute_reliability_score(reliability)
-    maintenance = _compute_maintenance_score(static_result) if static_result else None
+    docs_maintenance = _compute_docs_maintenance_score(static_result) if static_result else None
     security = _compute_security_score(server)
 
     # ── Classification, publisher, verification ───────────────────────
@@ -380,25 +394,25 @@ def compute_score(
     detected_flags = detect_flags(server)
     result.flags = detected_flags
 
-    # Apply template description penalty to schema_docs
+    # Apply template description penalty to schema_quality
     has_template_flag = any(f.key == "TEMPLATE_DESCRIPTION" for f in detected_flags)
-    if has_template_flag and schema_docs is not None:
-        schema_docs = max(0, schema_docs - 15)
+    if has_template_flag and schema_quality is not None:
+        schema_quality = max(0, schema_quality - 15)
 
     # ── Determine score type (applicability-aware) ──────────────────
     is_remote = getattr(server, "is_remote", True)
     applicable = {
-        "schema_docs": True,
+        "schema_quality": True,
         "protocol": is_remote,
         "reliability": is_remote,
-        "maintenance": True,
+        "docs_maintenance": True,
         "security": True,
     }
     filled = {
-        "schema_docs": schema_docs is not None,
+        "schema_quality": schema_quality is not None,
         "protocol": protocol is not None,
         "reliability": reliability_score is not None,
-        "maintenance": maintenance is not None,
+        "docs_maintenance": docs_maintenance is not None,
         "security": security is not None,
     }
     all_applicable_filled = all(
@@ -422,36 +436,36 @@ def compute_score(
 
     if use_enhanced:
         w = _ENHANCED_WEIGHTS
-        if schema_docs is not None:
-            weighted_sum += schema_docs * w["schema_docs"]
-            total_weight += w["schema_docs"]
+        if schema_quality is not None:
+            weighted_sum += schema_quality * w["schema_quality"]
+            total_weight += w["schema_quality"]
         if protocol is not None:
             weighted_sum += protocol * w["protocol"]
             total_weight += w["protocol"]
         if reliability_score is not None:
             weighted_sum += reliability_score * w["reliability"]
             total_weight += w["reliability"]
-        if maintenance is not None:
-            weighted_sum += maintenance * w["maintenance"]
-            total_weight += w["maintenance"]
+        if docs_maintenance is not None:
+            weighted_sum += docs_maintenance * w["docs_maintenance"]
+            total_weight += w["docs_maintenance"]
         if security is not None:
             weighted_sum += security * w["security"]
             total_weight += w["security"]
         weighted_sum += agent_usability * w["agent_usability"]
         total_weight += w["agent_usability"]
     else:
-        if schema_docs is not None:
-            weighted_sum += schema_docs * WEIGHT_SCHEMA_DOCS
-            total_weight += WEIGHT_SCHEMA_DOCS
+        if schema_quality is not None:
+            weighted_sum += schema_quality * WEIGHT_SCHEMA_QUALITY
+            total_weight += WEIGHT_SCHEMA_QUALITY
         if protocol is not None:
             weighted_sum += protocol * WEIGHT_PROTOCOL
             total_weight += WEIGHT_PROTOCOL
         if reliability_score is not None:
             weighted_sum += reliability_score * WEIGHT_RELIABILITY
             total_weight += WEIGHT_RELIABILITY
-        if maintenance is not None:
-            weighted_sum += maintenance * WEIGHT_MAINTENANCE
-            total_weight += WEIGHT_MAINTENANCE
+        if docs_maintenance is not None:
+            weighted_sum += docs_maintenance * WEIGHT_DOCS_MAINTENANCE
+            total_weight += WEIGHT_DOCS_MAINTENANCE
         if security is not None:
             weighted_sum += security * WEIGHT_SECURITY
             total_weight += WEIGHT_SECURITY
@@ -473,10 +487,10 @@ def compute_score(
     result.composite_score = composite_score
     result.grade = grade
     result.score_type = score_type
-    result.schema_docs_score = schema_docs
+    result.schema_quality_score = schema_quality
     result.protocol_score = protocol
     result.reliability_score = reliability_score
-    result.maintenance_score = maintenance
+    result.docs_maintenance_score = docs_maintenance
     result.security_score = security
     result.agent_usability_score = agent_usability
 

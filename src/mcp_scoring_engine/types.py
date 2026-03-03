@@ -130,12 +130,21 @@ class ScoreResult:
     score_type: str = ""  # "partial", "full", "enhanced"
 
     # Category scores
-    schema_docs_score: int | None = None
+    schema_quality_score: int | None = None
     protocol_score: int | None = None
     reliability_score: int | None = None
-    maintenance_score: int | None = None
+    docs_maintenance_score: int | None = None
     security_score: int | None = None
     agent_usability_score: int | None = None
+
+    # Backward-compatible aliases (deprecated, will be removed)
+    @property
+    def schema_docs_score(self) -> int | None:
+        return self.schema_quality_score
+
+    @property
+    def maintenance_score(self) -> int | None:
+        return self.docs_maintenance_score
 
     # Metadata
     flags: list[Flag] = field(default_factory=list)
