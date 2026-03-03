@@ -14,6 +14,7 @@ from .probes.static import analyze_repo
 from .scoring import (
     compute_score,
     extract_publisher,
+    FLAG_SCORE_CAPS,
     GRADE_THRESHOLDS,
     is_verified_publisher,
     score_to_grade,
@@ -52,6 +53,7 @@ __all__ = [
     "score_to_grade",
     "is_verified_publisher",
     "extract_publisher",
+    "FLAG_SCORE_CAPS",
     "GRADE_THRESHOLDS",
     "VERIFIED_PUBLISHERS",
     "WEIGHT_AGENT_USABILITY",

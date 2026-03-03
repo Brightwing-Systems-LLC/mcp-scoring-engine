@@ -7,8 +7,8 @@ Standard weights (no agent usability data):
   Category                Weight  Source
   ────────────────────    ──────  ──────────────────────────
   Schema & Documentation  25%     Tier 1 static analysis
-  Protocol Compliance     20%     Tier 2 deep probe
-  Reliability             20%     Tier 3 fast probe history
+  Protocol Compliance     20%     Tier 2 deep probe (remote only)
+  Reliability             20%     Tier 3 fast probe history (remote only)
   Maintenance & Health    15%     Tier 1 static analysis
   Security & Permissions  20%     Tier 1 registry metadata
 
@@ -17,16 +17,25 @@ Enhanced weights (with agent usability data):
   Category                Weight  Source
   ────────────────────    ──────  ──────────────────────────
   Schema & Documentation  20%     Tier 1 static analysis
-  Protocol Compliance     18%     Tier 2 deep probe
-  Reliability             18%     Tier 3 fast probe history
+  Protocol Compliance     18%     Tier 2 deep probe (remote only)
+  Reliability             18%     Tier 3 fast probe history (remote only)
   Maintenance & Health    12%     Tier 1 static analysis
   Security & Permissions  17%     Tier 1 registry metadata
   Agent Usability         15%     Tier 4 multi-model LLM eval
 
-Score types:
-  partial  — Only one data tier (shown on leaderboard, but no letter grade)
-  full     — 2+ data tiers (static + probe data) — receives a letter grade
+Local vs Remote scoring:
+  Remote servers have 5 applicable dimensions (all of the above).
+  Local servers have 3 applicable dimensions (Schema, Maintenance, Security).
+  Protocol and Reliability require a remote endpoint and are structurally
+  inapplicable to local (stdio-only) servers.
+
+Score types (applicability-aware):
+  partial  — Some *applicable* dimensions not yet measured (no letter grade)
+  full     — All applicable dimensions scored — receives a letter grade
   enhanced — Full + agent usability evaluation
+
+  A local server with Schema + Maintenance + Security all scored → "full".
+  A remote server needs all 5 dimensions scored → "full".
 
 Grade thresholds (full/enhanced only):
   A+ 95-100 | A 85-94 | B 70-84 | C 55-69 | D 40-54 | F 0-39
@@ -65,6 +74,15 @@ _ENHANCED_WEIGHTS = {
     "maintenance": 0.12,
     "security": 0.17,
     "agent_usability": WEIGHT_AGENT_USABILITY,
+}
+
+# ── Critical flag score caps ──────────────────────────────────────────
+# Flags with critical consequences cap the composite score.
+# Individual category scores remain unaffected (for diagnostics).
+FLAG_SCORE_CAPS = {
+    "DEAD_REPO": 0,  # Dead repos get 0 — no exceptions
+    "REPO_ARCHIVED": 40,  # Archived = max D grade
+    "STAGING_ARTIFACT": 55,  # Staging URLs = max C grade
 }
 
 # ── Grade thresholds ──────────────────────────────────────────────────
@@ -367,17 +385,30 @@ def compute_score(
     if has_template_flag and schema_docs is not None:
         schema_docs = max(0, schema_docs - 15)
 
-    # ── Determine score type ──────────────────────────────────────────
-    has_static = schema_docs is not None or maintenance is not None
-    has_deep = protocol is not None
-    has_reliability = reliability_score is not None
-
-    data_tiers = sum([has_static, has_deep, has_reliability])
+    # ── Determine score type (applicability-aware) ──────────────────
+    is_remote = getattr(server, "is_remote", True)
+    applicable = {
+        "schema_docs": True,
+        "protocol": is_remote,
+        "reliability": is_remote,
+        "maintenance": True,
+        "security": True,
+    }
+    filled = {
+        "schema_docs": schema_docs is not None,
+        "protocol": protocol is not None,
+        "reliability": reliability_score is not None,
+        "maintenance": maintenance is not None,
+        "security": security is not None,
+    }
+    all_applicable_filled = all(
+        filled[d] for d, applies in applicable.items() if applies
+    )
 
     has_agent_usability = agent_usability is not None
-    if data_tiers >= 2 and has_agent_usability:
+    if all_applicable_filled and has_agent_usability:
         score_type = "enhanced"
-    elif data_tiers >= 2:
+    elif all_applicable_filled:
         score_type = "full"
     else:
         score_type = "partial"
@@ -430,6 +461,11 @@ def compute_score(
 
     raw_score = weighted_sum / total_weight
     composite_score = max(0, min(100, int(round(raw_score))))
+
+    # ── Apply critical flag score caps ─────────────────────────────────
+    for flag in detected_flags:
+        if flag.key in FLAG_SCORE_CAPS:
+            composite_score = min(composite_score, FLAG_SCORE_CAPS[flag.key])
 
     grade = "" if score_type == "partial" else score_to_grade(composite_score)
 

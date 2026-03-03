@@ -190,10 +190,11 @@ class TestComputeScore:
         assert result.score_type == "partial"
         assert result.grade == ""
 
-    def test_full_score_two_tiers(self, clean_server, full_static, full_deep_probe):
+    def test_remote_two_tiers_is_partial(self, clean_server, full_static, full_deep_probe):
+        """Remote server with static + probe but no reliability → partial."""
         result = compute_score(clean_server, full_static, full_deep_probe)
-        assert result.score_type == "full"
-        assert result.grade != ""
+        assert result.score_type == "partial"
+        assert result.grade == ""
 
     def test_no_data(self):
         server = ServerInfo()
@@ -381,13 +382,215 @@ class TestAgentUsability:
         assert result.composite_score is not None
         assert result.agent_usability_score == 75
 
-    def test_enhanced_two_tiers_plus_agent(self, clean_server, full_static, full_deep_probe):
-        """Two standard tiers + agent_usability = enhanced."""
+    def test_remote_two_tiers_plus_agent_stays_partial(self, clean_server, full_static, full_deep_probe):
+        """Remote server with only 2 of 5 dims + agent_usability → still partial."""
         result = compute_score(
             clean_server,
             full_static,
             full_deep_probe,
             agent_usability=70,
         )
+        assert result.score_type == "partial"
+        assert result.grade == ""
+
+
+class TestLocalServerScoring:
+    """Tests for applicability-aware scoring of local (stdio-only) servers."""
+
+    def test_local_with_all_applicable_is_full(self, full_static):
+        """Local server with schema + maintenance + security → full with grade."""
+        server = ServerInfo(
+            name="local/mcp-server",
+            description="A local MCP server",
+            repo_url="https://github.com/test/local-mcp",
+            is_remote=False,
+            registry_metadata={"env_vars": ["API_KEY"]},
+        )
+        result = compute_score(server, static_result=full_static)
+        assert result.score_type == "full"
+        assert result.grade != ""
+        assert result.schema_docs_score is not None
+        assert result.maintenance_score is not None
+        assert result.security_score is not None
+        assert result.protocol_score is None
+        assert result.reliability_score is None
+
+    def test_local_with_only_security_is_partial(self):
+        """Local server with only security data → partial, no grade."""
+        server = ServerInfo(
+            name="local/bare-server",
+            is_remote=False,
+            registry_metadata={"env_vars": []},
+        )
+        result = compute_score(server)
+        assert result.score_type == "partial"
+        assert result.grade == ""
+        assert result.security_score is not None
+
+    def test_remote_needs_all_five_for_full(self, full_static):
+        """Remote server with only static analysis → partial."""
+        server = ServerInfo(
+            name="remote/test",
+            is_remote=True,
+            registry_metadata={"env_vars": []},
+        )
+        result = compute_score(server, static_result=full_static)
+        assert result.score_type == "partial"
+        assert result.grade == ""
+
+    def test_remote_with_all_five_is_full(
+        self, clean_server, full_static, full_deep_probe, full_reliability
+    ):
+        """Remote server with all 5 dimensions → full."""
+        result = compute_score(
+            clean_server, full_static, full_deep_probe, full_reliability
+        )
+        assert result.score_type == "full"
+        assert result.grade != ""
+
+    def test_local_full_plus_agent_is_enhanced(self, full_static):
+        """Local server with all applicable + agent_usability → enhanced."""
+        server = ServerInfo(
+            name="local/enhanced-server",
+            is_remote=False,
+            registry_metadata={"env_vars": []},
+            repo_url="https://github.com/test/local",
+        )
+        result = compute_score(
+            server, static_result=full_static, agent_usability=80
+        )
         assert result.score_type == "enhanced"
         assert result.grade != ""
+        assert result.agent_usability_score == 80
+
+    def test_local_score_reaches_100(self, full_static):
+        """Local servers can reach 100/100 on their applicable dimensions."""
+        server = ServerInfo(
+            name="local/perfect-server",
+            is_remote=False,
+            registry_metadata={"env_vars": [], "transport": "stdio"},
+            repo_url="https://github.com/test/perfect",
+            npm_url="https://npmjs.com/package/perfect-mcp",
+        )
+        # Create static analysis with perfect scores
+        perfect_static = StaticAnalysis(
+            schema_completeness=100,
+            description_quality=100,
+            documentation_coverage=100,
+            maintenance_pulse=100,
+            dependency_health=100,
+            license_clarity=100,
+            version_hygiene=100,
+        )
+        result = compute_score(server, static_result=perfect_static)
+        assert result.score_type == "full"
+        assert result.composite_score == 100
+
+
+class TestFlagScoreCaps:
+    """Critical flags must cap the composite score."""
+
+    def test_dead_repo_caps_at_zero(self, full_static, full_deep_probe, full_reliability):
+        """A dead repo gets composite=0 regardless of other scores."""
+        server = ServerInfo(
+            name="dead/server",
+            description="Good description for a dead server",
+            repo_url="https://github.com/dead/repo",
+            is_remote=True,
+            registry_metadata={"env_vars": [], "repo_status": "404"},
+            npm_url="https://npmjs.com/package/dead-server",
+        )
+        result = compute_score(server, full_static, full_deep_probe, full_reliability)
+        assert result.composite_score == 0
+        assert any(f.key == "DEAD_REPO" for f in result.flags)
+        # Category scores should still be populated (for diagnostics)
+        assert result.schema_docs_score is not None
+        assert result.protocol_score is not None
+
+    def test_dead_repo_grade_is_f(self, full_static, full_deep_probe, full_reliability):
+        """Dead repo with full data gets F grade."""
+        server = ServerInfo(
+            name="dead/graded",
+            description="Good description",
+            repo_url="https://github.com/dead/graded",
+            is_remote=True,
+            registry_metadata={"env_vars": [], "repo_status": "gone"},
+            npm_url="https://npmjs.com/package/dead",
+        )
+        result = compute_score(server, full_static, full_deep_probe, full_reliability)
+        assert result.grade == "F"
+
+    def test_archived_caps_at_40(self, full_static, full_deep_probe, full_reliability):
+        """Archived repo caps composite at 40 (max D grade)."""
+        server = ServerInfo(
+            name="archived/server",
+            description="Good description for archived server",
+            repo_url="https://github.com/archived/repo",
+            is_remote=True,
+            registry_metadata={"env_vars": [], "archived": True},
+            npm_url="https://npmjs.com/package/archived",
+        )
+        result = compute_score(server, full_static, full_deep_probe, full_reliability)
+        assert result.composite_score <= 40
+        assert result.grade in ("D", "F")
+        assert any(f.key == "REPO_ARCHIVED" for f in result.flags)
+
+    def test_staging_caps_at_55(self, full_static, full_deep_probe, full_reliability):
+        """Staging endpoint caps composite at 55 (max C grade)."""
+        server = ServerInfo(
+            name="staging/server",
+            description="Good description",
+            repo_url="https://github.com/test/staging",
+            remote_endpoint_url="https://localhost:8080/mcp",
+            is_remote=True,
+            registry_metadata={"env_vars": []},
+            npm_url="https://npmjs.com/package/staging",
+        )
+        result = compute_score(server, full_static, full_deep_probe, full_reliability)
+        assert result.composite_score <= 55
+        assert result.grade in ("C", "D", "F")
+        assert any(f.key == "STAGING_ARTIFACT" for f in result.flags)
+
+    def test_category_scores_unaffected_by_cap(self, full_static, full_deep_probe, full_reliability):
+        """Flag caps only affect composite — individual categories stay accurate."""
+        # Normal server
+        normal_server = ServerInfo(
+            name="normal/server",
+            description="Good description",
+            repo_url="https://github.com/normal/repo",
+            is_remote=True,
+            registry_metadata={"env_vars": []},
+            npm_url="https://npmjs.com/package/normal",
+        )
+        normal_result = compute_score(normal_server, full_static, full_deep_probe, full_reliability)
+
+        # Dead version of same server
+        dead_server = ServerInfo(
+            name="normal/server",
+            description="Good description",
+            repo_url="https://github.com/normal/repo",
+            is_remote=True,
+            registry_metadata={"env_vars": [], "repo_status": "404"},
+            npm_url="https://npmjs.com/package/normal",
+        )
+        dead_result = compute_score(dead_server, full_static, full_deep_probe, full_reliability)
+
+        # Composite is capped to 0, but category scores match
+        assert dead_result.composite_score == 0
+        assert dead_result.schema_docs_score == normal_result.schema_docs_score
+        assert dead_result.protocol_score == normal_result.protocol_score
+        assert dead_result.reliability_score == normal_result.reliability_score
+        assert dead_result.maintenance_score == normal_result.maintenance_score
+
+    def test_multiple_flags_use_lowest_cap(self, full_static, full_deep_probe, full_reliability):
+        """Server with both DEAD_REPO and STAGING_ARTIFACT uses the lowest cap (0)."""
+        server = ServerInfo(
+            name="double-flagged/server",
+            description="Bad server",
+            repo_url="https://github.com/dead/server",
+            remote_endpoint_url="https://localhost:3000/mcp",
+            is_remote=True,
+            registry_metadata={"env_vars": [], "repo_status": "404"},
+        )
+        result = compute_score(server, full_static, full_deep_probe, full_reliability)
+        assert result.composite_score == 0

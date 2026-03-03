@@ -124,7 +124,9 @@ def test_cli_mode_latency_only():
     result = compute_score(server, deep_probe=deep, reliability=reliability)
 
     assert result.composite_score is not None
-    assert result.score_type == "full"  # deep + reliability = 2 tiers
+    # Local server: protocol & reliability are N/A, so deep+reliability don't count.
+    # Only security is filled (from metadata), schema_docs and maintenance are missing → partial.
+    assert result.score_type == "partial"
     assert result.reliability_score == 100  # 50ms latency
 
 
