@@ -123,7 +123,7 @@ def test_cli_mode_latency_only():
 
     result = compute_score(server, deep_probe=deep, reliability=reliability)
 
-    assert result.composite_score is not None
+    assert result.composite_score is None  # No composite for partials
     # Local server: protocol & reliability are N/A, so deep+reliability don't count.
     # Only security is filled (from metadata), schema_docs and maintenance are missing → partial.
     assert result.score_type == "partial"
@@ -151,7 +151,7 @@ def test_github_only_mode():
 
     result = compute_score(server, static_result=static)
 
-    assert result.composite_score is not None
+    assert result.composite_score is None  # No composite for partials
     assert result.score_type == "partial"
     assert result.grade == ""  # Partial scores don't get grades
     assert result.protocol_score is None
@@ -164,6 +164,7 @@ def test_no_data_returns_partial_score():
     """Server with no data still gets a security-only partial score."""
     server = ServerInfo()
     result = compute_score(server)
-    assert result.composite_score is not None
+    assert result.composite_score is None  # No composite for partials
     assert result.grade == ""
     assert result.score_type == "partial"
+    assert result.security_score is not None  # Security always computed

@@ -331,9 +331,12 @@ class TestComputeScore:
 
     def test_partial_score_static_only(self, clean_server, full_static):
         result = compute_score(clean_server, static_result=full_static)
-        assert result.composite_score is not None
+        assert result.composite_score is None  # No composite for partials
         assert result.score_type == "partial"
         assert result.grade == ""
+        # Category scores are still computed
+        assert result.schema_quality_score is not None
+        assert result.security_score is not None
 
     def test_remote_two_tiers_is_partial(self, clean_server, full_static, full_deep_probe):
         """Remote server with static + probe but no reliability → partial."""
@@ -344,8 +347,10 @@ class TestComputeScore:
     def test_no_data(self):
         server = ServerInfo()
         result = compute_score(server)
-        assert result.composite_score is not None
+        assert result.composite_score is None  # No composite for partials
         assert result.score_type == "partial"
+        # Security score still computed (always available from metadata)
+        assert result.security_score is not None
 
     def test_score_clamped(self, clean_server, full_static, full_deep_probe, full_reliability):
         result = compute_score(clean_server, full_static, full_deep_probe, full_reliability)
@@ -527,7 +532,7 @@ class TestAgentUsability:
         )
         # Only 1 standard tier (static), so stays partial even with agent_usability
         assert result.score_type == "partial"
-        assert result.composite_score is not None
+        assert result.composite_score is None  # No composite for partials
         assert result.agent_usability_score == 75
 
     def test_remote_two_tiers_plus_agent_stays_partial(self, clean_server, full_static, full_deep_probe):

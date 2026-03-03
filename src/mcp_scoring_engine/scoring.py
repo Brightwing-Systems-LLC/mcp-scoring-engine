@@ -459,19 +459,25 @@ def compute_score(
     if total_weight == 0:
         return result
 
-    raw_score = weighted_sum / total_weight
-    composite_score = max(0, min(100, int(round(raw_score))))
+    # ── Partial servers: suppress misleading composite ─────────────────
+    # Weight normalization inflates composites for data-poor servers.
+    # Only full/enhanced servers get a composite score and grade.
+    if score_type == "partial":
+        result.composite_score = None
+        result.grade = ""
+    else:
+        raw_score = weighted_sum / total_weight
+        composite_score = max(0, min(100, int(round(raw_score))))
 
-    # ── Apply critical flag score caps ─────────────────────────────────
-    for flag in detected_flags:
-        if flag.key in FLAG_SCORE_CAPS:
-            composite_score = min(composite_score, FLAG_SCORE_CAPS[flag.key])
+        # Apply critical flag score caps
+        for flag in detected_flags:
+            if flag.key in FLAG_SCORE_CAPS:
+                composite_score = min(composite_score, FLAG_SCORE_CAPS[flag.key])
 
-    grade = "" if score_type == "partial" else score_to_grade(composite_score)
+        result.composite_score = composite_score
+        result.grade = score_to_grade(composite_score)
 
     # ── Store results ─────────────────────────────────────────────────
-    result.composite_score = composite_score
-    result.grade = grade
     result.score_type = score_type
     result.schema_quality_score = schema_quality
     result.protocol_score = protocol
