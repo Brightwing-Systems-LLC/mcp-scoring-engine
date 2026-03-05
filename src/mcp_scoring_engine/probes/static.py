@@ -740,7 +740,7 @@ def _probe_version_hygiene(
             score += 10
 
     if releases:
-        with_body = sum(1 for r in releases if r.get("body", "").strip())
+        with_body = sum(1 for r in releases if (r.get("body") or "").strip())
         details["releases_with_notes"] = with_body
         if with_body >= 1:
             score += 15
