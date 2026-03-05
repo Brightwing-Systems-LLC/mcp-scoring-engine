@@ -168,6 +168,9 @@ def _probe_schema_completeness(
     markers_found = set()
     tool_defs_found = 0
     files_checked = 0
+    tool_source_files = []
+
+    MAX_SOURCE_BYTES = 12_000  # Cap per file to control token budget
 
     for path in candidate_files[:5]:
         content_data = client.get_contents(path)
@@ -184,18 +187,29 @@ def _probe_schema_completeness(
         except Exception:
             continue
 
+        has_tool_pattern = False
         for pattern in TOOL_DEF_PATTERNS:
             if pattern.search(content):
                 tool_defs_found += 1
+                has_tool_pattern = True
                 break
 
         for marker in SCHEMA_MARKERS:
             if marker in content:
                 markers_found.add(marker)
 
+        # Retain source for files with tool patterns (for LLM extraction)
+        if has_tool_pattern:
+            tool_source_files.append({
+                "path": path,
+                "content": content[:MAX_SOURCE_BYTES],
+            })
+
     details["tool_files_found"] = tool_defs_found
     details["schema_markers_found"] = sorted(markers_found)
     details["files_checked"] = files_checked
+    if tool_source_files:
+        details["tool_source_files"] = tool_source_files
 
     if tool_defs_found == 0:
         return 40, {**details, "issues": ["no_tool_definitions_found"]}

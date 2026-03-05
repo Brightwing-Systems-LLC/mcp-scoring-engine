@@ -20,7 +20,9 @@ TIMEOUT = 20
 class GitHubRateLimitExhausted(Exception):
     """Raised when the GitHub API rate limit is exhausted."""
 
-    pass
+    def __init__(self, message: str, reset_timestamp: int | None = None):
+        super().__init__(message)
+        self.reset_timestamp = reset_timestamp
 
 
 def _get_headers() -> dict:
@@ -81,8 +83,10 @@ class GitHubPublicClient:
                     self.repo,
                 )
                 if str(remaining) == "0":
+                    reset_ts = resp.headers.get("x-ratelimit-reset")
                     raise GitHubRateLimitExhausted(
-                        f"GitHub API rate limit exhausted for {self.owner}/{self.repo}"
+                        f"GitHub API rate limit exhausted for {self.owner}/{self.repo}",
+                        reset_timestamp=int(reset_ts) if reset_ts else None,
                     )
                 return None
             resp.raise_for_status()
