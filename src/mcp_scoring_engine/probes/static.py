@@ -111,10 +111,14 @@ def analyze_repo(
 
 TOOL_DEF_PATTERNS = [
     re.compile(r"@(?:mcp\.)?tool", re.IGNORECASE),
-    re.compile(r"server\.tool\s*\(", re.IGNORECASE),
+    re.compile(r"server\.(?:tool|call_tool|register_tool)\s*[\(\[]", re.IGNORECASE),
     re.compile(r"addTool\s*\(", re.IGNORECASE),
     re.compile(r"tools?\s*[=:]\s*\[", re.IGNORECASE),
     re.compile(r"inputSchema", re.IGNORECASE),
+    re.compile(r"new\s+Tool\s*\(", re.IGNORECASE),
+    re.compile(r"ToolDefinition\s*[({]", re.IGNORECASE),
+    re.compile(r"\.add_tool\s*\(", re.IGNORECASE),
+    re.compile(r"register_tool\s*\(", re.IGNORECASE),
 ]
 
 SCHEMA_MARKERS = [
@@ -136,30 +140,50 @@ def _probe_schema_completeness(
     if not tree:
         return 0, {**details, "issues": ["no_tree"]}
 
-    source_exts = {".py", ".ts", ".js", ".mjs", ".go", ".rs"}
+    source_exts = {".py", ".ts", ".js", ".mjs", ".tsx", ".jsx", ".go", ".rs"}
+    _PRIMARY_KEYWORDS = [
+        "tool", "server", "mcp", "handler", "index", "main", "app",
+        "route", "api", "endpoint", "function", "core", "plugin",
+    ]
+    _SRC_PREFIXES = ("src/", "lib/", "packages/", "servers/", "plugins/")
+
     candidate_files = []
+
+    # Stage 1: files whose path contains a primary keyword
     for item in tree:
         if item.get("type") != "blob":
             continue
         path = item["path"]
         ext = "." + path.rsplit(".", 1)[-1] if "." in path else ""
         if ext in source_exts and any(
-            kw in path.lower()
-            for kw in ["tool", "server", "mcp", "handler", "index", "main", "app"]
+            kw in path.lower() for kw in _PRIMARY_KEYWORDS
         ):
             candidate_files.append(path)
 
+    # Stage 2: fallback — any source file under common source directories
     if not candidate_files:
         for item in tree:
             if item.get("type") != "blob":
                 continue
             path = item["path"]
             ext = "." + path.rsplit(".", 1)[-1] if "." in path else ""
-            if ext in source_exts and (
-                path.startswith("src/") or path.startswith("lib/")
+            if ext in source_exts and any(
+                path.startswith(p) for p in _SRC_PREFIXES
             ):
                 candidate_files.append(path)
-            if len(candidate_files) >= 10:
+            if len(candidate_files) >= 20:
+                break
+
+    # Stage 3: last resort — any source file at any depth
+    if not candidate_files:
+        for item in tree:
+            if item.get("type") != "blob":
+                continue
+            path = item["path"]
+            ext = "." + path.rsplit(".", 1)[-1] if "." in path else ""
+            if ext in source_exts:
+                candidate_files.append(path)
+            if len(candidate_files) >= 20:
                 break
 
     if not candidate_files:
@@ -172,7 +196,7 @@ def _probe_schema_completeness(
 
     MAX_SOURCE_BYTES = 12_000  # Cap per file to control token budget
 
-    for path in candidate_files[:5]:
+    for path in candidate_files[:10]:
         content_data = client.get_contents(path)
         if not content_data or isinstance(content_data, list):
             continue

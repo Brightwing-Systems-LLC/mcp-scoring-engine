@@ -401,16 +401,21 @@ def compute_score(
         schema_quality = max(0, schema_quality - 15)
 
     # ── Determine score type (applicability-aware) ──────────────────
-    # Remote: 5 dimensions (schema, protocol, reliability, docs, security)
+    # Remote (probed): 5 dimensions (schema, protocol, reliability, docs, security)
+    # Remote (unprobed): 4 dimensions (schema, protocol, docs, security)
+    #   - reliability requires accumulated probe history; having an endpoint
+    #     URL alone doesn't make it applicable
     # Local (probed): 4 dimensions (+ protocol from sandbox probe)
     # Local (unprobed): 3 dimensions (schema, docs, security)
     is_remote = getattr(server, "is_remote", True)
     has_sandbox_probe = getattr(server, "has_sandbox_probe", False)
     protocol_applicable = is_remote or has_sandbox_probe
+    # Reliability only applicable when probe history exists (data was provided)
+    reliability_applicable = is_remote and reliability is not None
     applicable = {
         "schema_quality": True,
         "protocol": protocol_applicable,
-        "reliability": is_remote,  # Only remote has ongoing uptime monitoring
+        "reliability": reliability_applicable,
         "docs_maintenance": True,
         "security": True,
     }

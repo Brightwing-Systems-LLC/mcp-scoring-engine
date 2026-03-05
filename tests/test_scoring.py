@@ -338,11 +338,15 @@ class TestComputeScore:
         assert result.schema_quality_score is not None
         assert result.security_score is not None
 
-    def test_remote_two_tiers_is_partial(self, clean_server, full_static, full_deep_probe):
-        """Remote server with static + probe but no reliability → partial."""
+    def test_remote_without_reliability_is_full(self, clean_server, full_static, full_deep_probe):
+        """Remote server with static + probe but no reliability → full.
+
+        Reliability is only applicable when probe history data is provided.
+        Without it, the server is scored on the remaining applicable dimensions.
+        """
         result = compute_score(clean_server, full_static, full_deep_probe)
-        assert result.score_type == "partial"
-        assert result.grade == ""
+        assert result.score_type == "full"
+        assert result.grade != ""
 
     def test_no_data(self):
         server = ServerInfo()
@@ -535,16 +539,20 @@ class TestAgentUsability:
         assert result.composite_score is None  # No composite for partials
         assert result.agent_usability_score == 75
 
-    def test_remote_two_tiers_plus_agent_stays_partial(self, clean_server, full_static, full_deep_probe):
-        """Remote server with only 2 of 5 dims + agent_usability → still partial."""
+    def test_remote_two_tiers_plus_agent_is_enhanced(self, clean_server, full_static, full_deep_probe):
+        """Remote server with static + probe + agent_usability → enhanced.
+
+        Reliability is not applicable without probe history data, so
+        all applicable dimensions are filled → enhanced.
+        """
         result = compute_score(
             clean_server,
             full_static,
             full_deep_probe,
             agent_usability=70,
         )
-        assert result.score_type == "partial"
-        assert result.grade == ""
+        assert result.score_type == "enhanced"
+        assert result.grade != ""
 
 
 class TestLocalServerScoring:
