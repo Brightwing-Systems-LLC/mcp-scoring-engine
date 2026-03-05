@@ -5,11 +5,13 @@ from datetime import datetime, timedelta, timezone
 from mcp_scoring_engine import ServerInfo, detect_flags
 from mcp_scoring_engine.flags import (
     FlagContext,
+    _check_ambiguous_schema,
     _check_dead_repo,
     _check_description_duplicate,
     _check_high_secret_demand,
     _check_no_source,
     _check_repo_archived,
+    _check_schema_drift,
     _check_sensitive_creds,
     _check_staging_artifact,
     _check_stale_project,
@@ -205,6 +207,81 @@ class TestDescriptionDuplicate:
     def test_no_context(self):
         server = ServerInfo(description="Any description")
         assert len(_check_description_duplicate(server, None)) == 0
+
+
+class TestSchemaDrift:
+    def test_drift_detected(self):
+        server = ServerInfo(
+            registry_metadata={
+                "schema_drift": {
+                    "has_drift": True,
+                    "missing_at_runtime": ["tool_a"],
+                    "extra_at_runtime": ["tool_b", "tool_c"],
+                }
+            }
+        )
+        flags = _check_schema_drift(server)
+        assert len(flags) == 1
+        assert flags[0].key == "SCHEMA_DRIFT"
+        assert flags[0].severity == "warning"
+        assert "1 tool(s) missing at runtime" in flags[0].description
+        assert "2 tool(s) only found at runtime" in flags[0].description
+
+    def test_no_drift(self):
+        server = ServerInfo(
+            registry_metadata={
+                "schema_drift": {
+                    "has_drift": False,
+                    "missing_at_runtime": [],
+                    "extra_at_runtime": [],
+                }
+            }
+        )
+        assert len(_check_schema_drift(server)) == 0
+
+    def test_no_drift_data(self):
+        server = ServerInfo(registry_metadata={})
+        assert len(_check_schema_drift(server)) == 0
+
+    def test_missing_only(self):
+        server = ServerInfo(
+            registry_metadata={
+                "schema_drift": {
+                    "has_drift": True,
+                    "missing_at_runtime": ["tool_x", "tool_y"],
+                    "extra_at_runtime": [],
+                }
+            }
+        )
+        flags = _check_schema_drift(server)
+        assert len(flags) == 1
+        assert "2 tool(s) missing at runtime" in flags[0].description
+
+
+class TestAmbiguousSchema:
+    def test_ambiguous_multiple(self):
+        server = ServerInfo(
+            registry_metadata={"ambiguous_tools": ["search", "create_item"]}
+        )
+        flags = _check_ambiguous_schema(server)
+        assert len(flags) == 1
+        assert flags[0].key == "AMBIGUOUS_SCHEMA"
+        assert flags[0].severity == "warning"
+        assert "2 tool(s)" in flags[0].description
+        assert "search" in flags[0].description
+
+    def test_single_tool_not_flagged(self):
+        """Need 2+ ambiguous tools to trigger the flag."""
+        server = ServerInfo(registry_metadata={"ambiguous_tools": ["search"]})
+        assert len(_check_ambiguous_schema(server)) == 0
+
+    def test_no_ambiguous(self):
+        server = ServerInfo(registry_metadata={"ambiguous_tools": []})
+        assert len(_check_ambiguous_schema(server)) == 0
+
+    def test_no_metadata(self):
+        server = ServerInfo(registry_metadata={})
+        assert len(_check_ambiguous_schema(server)) == 0
 
 
 class TestDetectFlags:

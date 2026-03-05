@@ -1,6 +1,6 @@
 """Red flag detection for MCP servers.
 
-Detects 9 categories of red flags that indicate quality or security concerns.
+Detects 11 categories of red flags that indicate quality or security concerns.
 """
 
 from __future__ import annotations
@@ -62,6 +62,8 @@ def detect_flags(server: ServerInfo, context: FlagContext | None = None) -> list
     flags.extend(_check_staging_artifact(server))
     flags.extend(_check_template_description(server))
     flags.extend(_check_description_duplicate(server, context))
+    flags.extend(_check_schema_drift(server))
+    flags.extend(_check_ambiguous_schema(server))
 
     return flags
 
@@ -245,3 +247,48 @@ def _check_description_duplicate(
             )
         ]
     return []
+
+
+def _check_schema_drift(server: ServerInfo) -> list[Flag]:
+    """Static analysis and runtime probe found different tool sets."""
+    meta = server.registry_metadata or {}
+    drift = meta.get("schema_drift", {})
+    if not isinstance(drift, dict) or not drift.get("has_drift"):
+        return []
+
+    missing = drift.get("missing_at_runtime", [])
+    extra = drift.get("extra_at_runtime", [])
+    parts = []
+    if missing:
+        parts.append(f"{len(missing)} tool(s) missing at runtime")
+    if extra:
+        parts.append(f"{len(extra)} tool(s) only found at runtime")
+    detail = "; ".join(parts) if parts else "Tool sets differ"
+
+    return [
+        Flag(
+            key="SCHEMA_DRIFT",
+            severity="warning",
+            label="Schema Drift",
+            description=f"Source code and runtime expose different tools. {detail}.",
+        )
+    ]
+
+
+def _check_ambiguous_schema(server: ServerInfo) -> list[Flag]:
+    """Multiple AI models interpret tool schemas differently."""
+    meta = server.registry_metadata or {}
+    ambiguous = meta.get("ambiguous_tools", [])
+    if not isinstance(ambiguous, list) or len(ambiguous) < 2:
+        return []
+    return [
+        Flag(
+            key="AMBIGUOUS_SCHEMA",
+            severity="warning",
+            label="Ambiguous Schemas",
+            description=(
+                f"{len(ambiguous)} tool(s) have ambiguous schemas that AI models "
+                f"interpret differently: {', '.join(ambiguous[:5])}."
+            ),
+        )
+    ]

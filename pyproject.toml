@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcp-scoring-engine"
-version = "0.4.2"
+version = "0.5.0"
 description = "Scoring engine for MCP server quality assessment"
 readme = "README.md"
 license = "MIT"
