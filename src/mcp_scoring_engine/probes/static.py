@@ -19,9 +19,7 @@ from .github_client import GitHubPublicClient
 logger = logging.getLogger(__name__)
 
 
-def analyze_repo(
-    repo_url: str, *, registry_id: str | None = None
-) -> StaticAnalysis | None:
+def analyze_repo(repo_url: str, *, registry_id: str | None = None) -> StaticAnalysis | None:
     """Run all static analysis probes against a GitHub repository.
 
     Returns a StaticAnalysis with all 7 metric scores, or None if
@@ -54,9 +52,7 @@ def analyze_repo(
         result.open_issues_count = repo.get("open_issues_count", 0)
         pushed_at = repo.get("pushed_at")
         if pushed_at:
-            result.last_commit_at = datetime.fromisoformat(
-                pushed_at.replace("Z", "+00:00")
-            )
+            result.last_commit_at = datetime.fromisoformat(pushed_at.replace("Z", "+00:00"))
 
         if releases:
             result.latest_version = releases[0].get("tag_name", "")
@@ -131,6 +127,40 @@ SCHEMA_MARKERS = [
 ]
 
 
+_MCP_MANIFEST_PATTERNS = {
+    "package.json": [
+        re.compile(r'"@modelcontextprotocol/sdk"'),
+        re.compile(r'"@anthropic-ai/sdk"'),
+    ],
+    "pyproject.toml": [
+        re.compile(r'["\'](mcp|modelcontextprotocol)["\']'),
+    ],
+    "setup.py": [
+        re.compile(r'["\'](mcp|modelcontextprotocol)["\']'),
+    ],
+}
+
+_MCP_IMPORT_PATTERNS_PY = [
+    re.compile(r"^(?:from|import)\s+mcp\b", re.MULTILINE),
+]
+_MCP_IMPORT_PATTERNS_JS = [
+    re.compile(r'from\s+["\']@modelcontextprotocol'),
+    re.compile(r'require\(\s*["\']@modelcontextprotocol'),
+]
+
+_COMMON_ENTRY_POINTS = [
+    "src/index.ts",
+    "src/index.js",
+    "index.ts",
+    "index.js",
+    "main.py",
+    "server.py",
+    "app.py",
+    "src/server.py",
+    "src/main.py",
+]
+
+
 def _probe_schema_completeness(
     tree: list | None, file_names: set, client: GitHubPublicClient
 ) -> tuple[int, dict]:
@@ -142,12 +172,49 @@ def _probe_schema_completeness(
 
     source_exts = {".py", ".ts", ".js", ".mjs", ".tsx", ".jsx", ".go", ".rs"}
     _PRIMARY_KEYWORDS = [
-        "tool", "server", "mcp", "handler", "index", "main", "app",
-        "route", "api", "endpoint", "function", "core", "plugin",
+        "tool",
+        "server",
+        "mcp",
+        "handler",
+        "index",
+        "main",
+        "app",
+        "route",
+        "api",
+        "endpoint",
+        "function",
+        "core",
+        "plugin",
     ]
     _SRC_PREFIXES = ("src/", "lib/", "packages/", "servers/", "plugins/")
 
+    # --- Stage 0: Manifest-based MCP project confirmation ---
+    confirmed_mcp = False
+    for manifest_name, patterns in _MCP_MANIFEST_PATTERNS.items():
+        if manifest_name in file_names:
+            content_data = client.get_contents(manifest_name)
+            if content_data and not isinstance(content_data, list):
+                import base64
+
+                try:
+                    manifest_text = base64.b64decode(content_data.get("content", "")).decode(
+                        "utf-8", errors="replace"
+                    )
+                    if any(p.search(manifest_text) for p in patterns):
+                        confirmed_mcp = True
+                        details["confirmed_mcp"] = True
+                        details["mcp_manifest"] = manifest_name
+                        break
+                except Exception:
+                    pass
+
     candidate_files = []
+    candidate_set = set()  # dedupe tracker
+
+    def _add_candidate(path: str) -> None:
+        if path not in candidate_set:
+            candidate_set.add(path)
+            candidate_files.append(path)
 
     # Stage 1: files whose path contains a primary keyword
     for item in tree:
@@ -155,10 +222,50 @@ def _probe_schema_completeness(
             continue
         path = item["path"]
         ext = "." + path.rsplit(".", 1)[-1] if "." in path else ""
-        if ext in source_exts and any(
-            kw in path.lower() for kw in _PRIMARY_KEYWORDS
-        ):
-            candidate_files.append(path)
+        if ext in source_exts and any(kw in path.lower() for kw in _PRIMARY_KEYWORDS):
+            _add_candidate(path)
+
+    # Stage 1b: import-based scanning (lightweight — checks file content for MCP imports)
+    import_candidates = []
+    for item in tree:
+        if item.get("type") != "blob":
+            continue
+        path = item["path"]
+        if path in candidate_set:
+            continue
+        ext = "." + path.rsplit(".", 1)[-1] if "." in path else ""
+        if ext in source_exts:
+            import_candidates.append((path, ext))
+        if len(import_candidates) >= 40:
+            break
+
+    for path, ext in import_candidates:
+        content_data = client.get_contents(path)
+        if not content_data or isinstance(content_data, list):
+            continue
+        import base64
+
+        try:
+            text = base64.b64decode(content_data.get("content", "")).decode(
+                "utf-8", errors="replace"
+            )[:2000]  # Only check first 2KB for imports
+        except Exception:
+            continue
+        patterns = (
+            _MCP_IMPORT_PATTERNS_PY
+            if ext == ".py"
+            else _MCP_IMPORT_PATTERNS_JS
+            if ext in {".ts", ".js", ".mjs", ".tsx", ".jsx"}
+            else []
+        )
+        if any(p.search(text) for p in patterns):
+            _add_candidate(path)
+
+    # Stage 1c: common entry points for confirmed MCP projects
+    if confirmed_mcp:
+        for ep in _COMMON_ENTRY_POINTS:
+            if ep in file_names:
+                _add_candidate(ep)
 
     # Stage 2: fallback — any source file under common source directories
     if not candidate_files:
@@ -167,11 +274,9 @@ def _probe_schema_completeness(
                 continue
             path = item["path"]
             ext = "." + path.rsplit(".", 1)[-1] if "." in path else ""
-            if ext in source_exts and any(
-                path.startswith(p) for p in _SRC_PREFIXES
-            ):
-                candidate_files.append(path)
-            if len(candidate_files) >= 20:
+            if ext in source_exts and any(path.startswith(p) for p in _SRC_PREFIXES):
+                _add_candidate(path)
+            if len(candidate_files) >= 30:
                 break
 
     # Stage 3: last resort — any source file at any depth
@@ -182,8 +287,8 @@ def _probe_schema_completeness(
             path = item["path"]
             ext = "." + path.rsplit(".", 1)[-1] if "." in path else ""
             if ext in source_exts:
-                candidate_files.append(path)
-            if len(candidate_files) >= 20:
+                _add_candidate(path)
+            if len(candidate_files) >= 30:
                 break
 
     if not candidate_files:
@@ -193,10 +298,12 @@ def _probe_schema_completeness(
     tool_defs_found = 0
     files_checked = 0
     tool_source_files = []
+    non_tool_source_files = []  # For confirmed MCP fallback
 
-    MAX_SOURCE_BYTES = 12_000  # Cap per file to control token budget
+    MAX_SOURCE_BYTES = 25_000  # Cap per file to control token budget
+    MAX_FILES = 20
 
-    for path in candidate_files[:10]:
+    for path in candidate_files[:MAX_FILES]:
         content_data = client.get_contents(path)
         if not content_data or isinstance(content_data, list):
             continue
@@ -224,10 +331,25 @@ def _probe_schema_completeness(
 
         # Retain source for files with tool patterns (for LLM extraction)
         if has_tool_pattern:
-            tool_source_files.append({
-                "path": path,
-                "content": content[:MAX_SOURCE_BYTES],
-            })
+            tool_source_files.append(
+                {
+                    "path": path,
+                    "content": content[:MAX_SOURCE_BYTES],
+                }
+            )
+        elif confirmed_mcp:
+            non_tool_source_files.append(
+                {
+                    "path": path,
+                    "content": content[:MAX_SOURCE_BYTES],
+                }
+            )
+
+    # For confirmed MCP projects with few tool-pattern matches, include
+    # additional source files to enable behavioral security / spec detection
+    if confirmed_mcp and len(tool_source_files) < 3:
+        for extra in non_tool_source_files[: 5 - len(tool_source_files)]:
+            tool_source_files.append(extra)
 
     details["tool_files_found"] = tool_defs_found
     details["schema_markers_found"] = sorted(markers_found)
@@ -274,8 +396,16 @@ def _probe_description_quality(
             score += 10
             details["checks"]["description_detailed"] = True
         action_words = [
-            "connect", "query", "search", "manage", "monitor",
-            "generate", "analyze", "create", "retrieve", "access",
+            "connect",
+            "query",
+            "search",
+            "manage",
+            "monitor",
+            "generate",
+            "analyze",
+            "create",
+            "retrieve",
+            "access",
         ]
         if any(w in desc.lower() for w in action_words):
             score += 10
@@ -309,8 +439,11 @@ def _probe_description_quality(
         if any(
             s in lower
             for s in [
-                "## usage", "## install", "## getting started",
-                "## setup", "## quick start",
+                "## usage",
+                "## install",
+                "## getting started",
+                "## setup",
+                "## quick start",
             ]
         ):
             score += 15
@@ -346,33 +479,32 @@ def _read_readme(tree: list | None, client: GitHubPublicClient) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def _probe_documentation_coverage(
-    repo: dict, file_names: set, root_files: set
-) -> tuple[int, dict]:
+def _probe_documentation_coverage(repo: dict, file_names: set, root_files: set) -> tuple[int, dict]:
     """Check for README, changelog, examples, contributing guide, etc."""
     score = 0
     checks = {}
 
     has_readme = any(
-        f.lower() in {"readme.md", "readme.rst", "readme.txt", "readme"}
-        for f in root_files
+        f.lower() in {"readme.md", "readme.rst", "readme.txt", "readme"} for f in root_files
     )
     checks["has_readme"] = has_readme
     if has_readme:
         score += 25
 
     changelog_names = {
-        "changelog.md", "changelog.txt", "changelog",
-        "changes.md", "history.md", "releases.md",
+        "changelog.md",
+        "changelog.txt",
+        "changelog",
+        "changes.md",
+        "history.md",
+        "releases.md",
     }
     has_changelog = any(f.lower() in changelog_names for f in root_files)
     checks["has_changelog"] = has_changelog
     if has_changelog:
         score += 15
 
-    has_examples = any(
-        f.startswith("examples/") or f.startswith("example/") for f in file_names
-    )
+    has_examples = any(f.startswith("examples/") or f.startswith("example/") for f in file_names)
     checks["has_examples"] = has_examples
     if has_examples:
         score += 15
@@ -384,8 +516,12 @@ def _probe_documentation_coverage(
         score += 10
 
     license_names = {
-        "license", "license.md", "license.txt",
-        "licence", "licence.md", "copying",
+        "license",
+        "license.md",
+        "license.txt",
+        "licence",
+        "licence.md",
+        "copying",
     }
     has_license = any(f.lower() in license_names for f in root_files)
     checks["has_license_file"] = has_license
@@ -439,11 +575,7 @@ def _probe_provenance_signals(
         namespace = ns_part.lstrip("@").lower()
 
     if repo_owner and namespace:
-        match = (
-            repo_owner == namespace
-            or namespace in repo_owner
-            or repo_owner in namespace
-        )
+        match = repo_owner == namespace or namespace in repo_owner or repo_owner in namespace
         checks["namespace_owner_match"] = match
         checks["repo_owner"] = repo_owner
         checks["registry_namespace"] = namespace
@@ -453,8 +585,12 @@ def _probe_provenance_signals(
         checks["namespace_owner_match"] = None
 
     installable_indicators = {
-        "package.json", "setup.py", "setup.cfg",
-        "pyproject.toml", "Cargo.toml", "go.mod",
+        "package.json",
+        "setup.py",
+        "setup.cfg",
+        "pyproject.toml",
+        "Cargo.toml",
+        "go.mod",
     }
     has_installable = bool(file_names & installable_indicators)
     checks["has_installable_package"] = has_installable
@@ -549,9 +685,7 @@ def _probe_maintenance_pulse(
         latest_date = releases[0].get("published_at", "")
         if latest_date:
             try:
-                release_dt = datetime.fromisoformat(
-                    latest_date.replace("Z", "+00:00")
-                )
+                release_dt = datetime.fromisoformat(latest_date.replace("Z", "+00:00"))
                 days_since = (now - release_dt).days
                 details["days_since_latest_release"] = days_since
                 if days_since <= 90:
@@ -562,9 +696,7 @@ def _probe_maintenance_pulse(
                 pass
 
         # Release notes bonus
-        has_notes = any(
-            bool((r.get("body") or "").strip()) for r in releases[:3]
-        )
+        has_notes = any(bool((r.get("body") or "").strip()) for r in releases[:3])
         if has_notes:
             release_pts += 5
             details["has_release_notes"] = True
@@ -640,16 +772,21 @@ def _probe_dependency_health(
     has_cargo = "Cargo.toml" in file_names
     has_go_mod = "go.mod" in file_names
 
-    has_manifest = (
-        has_package_json or has_pyproject or has_requirements or has_cargo or has_go_mod
-    )
+    has_manifest = has_package_json or has_pyproject or has_requirements or has_cargo or has_go_mod
     checks["has_dependency_manifest"] = has_manifest
     if has_manifest:
         score += 30
 
     lock_files = {
-        "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb",
-        "poetry.lock", "uv.lock", "Pipfile.lock", "Cargo.lock", "go.sum",
+        "package-lock.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "bun.lockb",
+        "poetry.lock",
+        "uv.lock",
+        "Pipfile.lock",
+        "Cargo.lock",
+        "go.sum",
     }
     has_lock = bool(file_names & lock_files)
     checks["has_lock_file"] = has_lock
@@ -657,19 +794,23 @@ def _probe_dependency_health(
         score += 25
 
     ci_paths = [
-        ".github/workflows/", ".gitlab-ci.yml",
-        ".circleci/", "Jenkinsfile", ".travis.yml",
+        ".github/workflows/",
+        ".gitlab-ci.yml",
+        ".circleci/",
+        "Jenkinsfile",
+        ".travis.yml",
     ]
-    has_ci = any(
-        any(f.startswith(ci) or f == ci for f in file_names) for ci in ci_paths
-    )
+    has_ci = any(any(f.startswith(ci) or f == ci for f in file_names) for ci in ci_paths)
     checks["has_ci"] = has_ci
     if has_ci:
         score += 20
 
     tool_configs = {
-        "renovate.json", "renovate.json5", ".renovaterc",
-        ".github/dependabot.yml", ".github/dependabot.yaml",
+        "renovate.json",
+        "renovate.json5",
+        ".renovaterc",
+        ".github/dependabot.yml",
+        ".github/dependabot.yaml",
     }
     has_dep_automation = bool(file_names & tool_configs)
     checks["has_dependency_automation"] = has_dep_automation
@@ -684,9 +825,21 @@ def _probe_dependency_health(
 # ---------------------------------------------------------------------------
 
 KNOWN_LICENSES = {
-    "MIT", "Apache-2.0", "GPL-2.0", "GPL-3.0", "BSD-2-Clause", "BSD-3-Clause",
-    "ISC", "MPL-2.0", "LGPL-2.1", "LGPL-3.0", "AGPL-3.0", "Unlicense",
-    "0BSD", "Artistic-2.0", "Zlib",
+    "MIT",
+    "Apache-2.0",
+    "GPL-2.0",
+    "GPL-3.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MPL-2.0",
+    "LGPL-2.1",
+    "LGPL-3.0",
+    "AGPL-3.0",
+    "Unlicense",
+    "0BSD",
+    "Artistic-2.0",
+    "Zlib",
 }
 
 
@@ -724,9 +877,7 @@ def _probe_license_clarity(repo: dict) -> tuple[int, dict]:
 SEMVER_PATTERN = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$")
 
 
-def _probe_version_hygiene(
-    releases: list | None, tags: list | None
-) -> tuple[int, dict]:
+def _probe_version_hygiene(releases: list | None, tags: list | None) -> tuple[int, dict]:
     """Check for semantic versioning and proper release practices."""
     score = 0
     details = {}
