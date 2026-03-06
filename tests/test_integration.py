@@ -70,7 +70,8 @@ def test_full_scoring_pipeline():
 
     assert isinstance(result, ScoreResult)
     assert result.composite_score is not None
-    assert result.score_type == "full"
+    assert result.visibility_level == "verified"  # all applicable + live probe
+    assert result.score_type == "full"  # backward compat
     assert result.grade in ("A+", "A", "B", "C", "D", "F")
     assert result.verified_publisher is True
     assert result.publisher == "modelcontextprotocol"
@@ -123,10 +124,12 @@ def test_cli_mode_latency_only():
 
     result = compute_score(server, deep_probe=deep, reliability=reliability)
 
-    assert result.composite_score is None  # No composite for partials
-    # Local server: protocol & reliability are N/A, so deep+reliability don't count.
-    # Only security is filled (from metadata), schema_docs and maintenance are missing → partial.
-    assert result.score_type == "partial"
+    # Local, unprobed: applicable dims = schema, docs, security (3).
+    # schema and docs are missing → not all applicable filled → limited visibility.
+    # But protocol + reliability + security are scored (3 dims) → gets composite.
+    assert result.visibility_level == "limited"
+    assert result.score_type == "partial"  # backward compat
+    assert result.composite_score is not None  # limited servers now get composites
     assert result.reliability_score == 100  # 50ms latency
 
 
@@ -151,20 +154,23 @@ def test_github_only_mode():
 
     result = compute_score(server, static_result=static)
 
-    assert result.composite_score is None  # No composite for partials
-    assert result.score_type == "partial"
-    assert result.grade == ""  # Partial scores don't get grades
+    # Remote with only static: protocol applicable but missing → limited
+    assert result.visibility_level == "limited"
+    assert result.score_type == "partial"  # backward compat
+    assert result.composite_score is not None  # limited servers now get composites
+    assert result.grade != ""  # limited servers get grades
     assert result.protocol_score is None
     assert result.reliability_score is None
     assert result.schema_docs_score is not None
     assert result.maintenance_score is not None
 
 
-def test_no_data_returns_partial_score():
-    """Server with no data still gets a security-only partial score."""
+def test_no_data_returns_unscored():
+    """Server with no data → unscored (only security, 1 dim)."""
     server = ServerInfo()
     result = compute_score(server)
-    assert result.composite_score is None  # No composite for partials
+    assert result.visibility_level == "unscored"
+    assert result.composite_score is None
     assert result.grade == ""
-    assert result.score_type == "partial"
+    assert result.score_type == "partial"  # backward compat
     assert result.security_score is not None  # Security always computed

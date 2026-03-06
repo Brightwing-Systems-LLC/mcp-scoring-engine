@@ -138,6 +138,11 @@ class ScoreResult:
     grade: str = ""
     score_type: str = ""  # "partial", "full", "enhanced"
 
+    # Visibility model
+    visibility_level: str = ""  # complete, verified, assessed, limited, unscored
+    dimensions_scored: int = 0  # count of non-None category scores (0-6)
+    dimensions_applicable: int = 0  # count of applicable dims for this server type
+
     # Category scores
     schema_quality_score: int | None = None
     protocol_score: int | None = None

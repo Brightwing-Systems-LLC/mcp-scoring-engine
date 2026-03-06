@@ -318,7 +318,10 @@ class TestComputeScore:
         assert result.composite_score is not None
         assert 0 <= result.composite_score <= 100
         assert result.grade != ""
-        assert result.score_type == "full"
+        assert result.visibility_level == "verified"  # all applicable + live probe
+        assert result.score_type == "full"  # backward compat
+        assert result.dimensions_scored == 5
+        assert result.dimensions_applicable == 5
         assert result.schema_quality_score is not None
         assert result.protocol_score is not None
         assert result.reliability_score is not None
@@ -328,30 +331,39 @@ class TestComputeScore:
         assert result.schema_docs_score == result.schema_quality_score
         assert result.maintenance_score == result.docs_maintenance_score
 
-    def test_partial_score_static_only(self, clean_server, full_static):
+    def test_limited_score_static_only(self, clean_server, full_static):
+        """Remote server with static only → limited visibility, gets composite."""
         result = compute_score(clean_server, static_result=full_static)
-        assert result.composite_score is None  # No composite for partials
-        assert result.score_type == "partial"
-        assert result.grade == ""
+        assert result.visibility_level == "limited"
+        assert result.score_type == "partial"  # backward compat
+        assert result.composite_score is not None  # limited servers now get composites
+        assert result.grade != ""
+        assert result.dimensions_scored == 3  # schema, docs, security
         # Category scores are still computed
         assert result.schema_quality_score is not None
         assert result.security_score is not None
 
-    def test_remote_without_reliability_is_full(self, clean_server, full_static, full_deep_probe):
-        """Remote server with static + probe but no reliability → full.
+    def test_remote_without_reliability_is_verified(self, clean_server, full_static, full_deep_probe):
+        """Remote server with static + probe but no reliability → verified.
 
         Reliability is only applicable when probe history data is provided.
-        Without it, the server is scored on the remaining applicable dimensions.
+        Without it, all applicable dims are filled + live probe → verified.
         """
         result = compute_score(clean_server, full_static, full_deep_probe)
-        assert result.score_type == "full"
+        assert result.visibility_level == "verified"
+        assert result.score_type == "full"  # backward compat
         assert result.grade != ""
+        assert result.dimensions_scored == 4  # schema, protocol, docs, security
+        assert result.dimensions_applicable == 4  # reliability not applicable
 
     def test_no_data(self):
         server = ServerInfo()
         result = compute_score(server)
-        assert result.composite_score is None  # No composite for partials
+        assert result.visibility_level == "unscored"
+        assert result.composite_score is None  # Unscored: only 1 dim (security)
         assert result.score_type == "partial"
+        assert result.grade == ""
+        assert result.dimensions_scored == 1
         # Security score still computed (always available from metadata)
         assert result.security_score is not None
 
@@ -441,10 +453,10 @@ class TestAgentUsability:
         assert result_without.score_type == result_with_none.score_type
         assert result_with_none.agent_usability_score is None
 
-    def test_full_becomes_enhanced(
+    def test_full_becomes_complete(
         self, clean_server, full_static, full_deep_probe, full_reliability
     ):
-        """Full score + agent_usability → enhanced score type."""
+        """Full score + agent_usability → complete visibility (enhanced score_type)."""
         result = compute_score(
             clean_server,
             full_static,
@@ -452,19 +464,23 @@ class TestAgentUsability:
             full_reliability,
             agent_usability=80,
         )
-        assert result.score_type == "enhanced"
+        assert result.visibility_level == "complete"
+        assert result.score_type == "enhanced"  # backward compat
         assert result.grade != ""
         assert result.agent_usability_score == 80
+        assert result.dimensions_scored == 6
 
-    def test_partial_never_becomes_enhanced(self, clean_server, full_static):
-        """Partial (1 tier) + agent_usability stays partial."""
+    def test_limited_with_agent_stays_limited(self, clean_server, full_static):
+        """Missing applicable dims + agent_usability → limited (not enhanced)."""
         result = compute_score(
             clean_server,
             full_static,
             agent_usability=90,
         )
-        assert result.score_type == "partial"
-        assert result.grade == ""
+        assert result.visibility_level == "limited"
+        assert result.score_type == "partial"  # backward compat
+        assert result.composite_score is not None  # limited gets composite
+        assert result.grade != ""
         assert result.agent_usability_score == 90
 
     def test_no_agent_stays_full(
@@ -524,8 +540,8 @@ class TestAgentUsability:
         assert WEIGHT_AGENT_USABILITY == _ENHANCED_WEIGHTS["agent_usability"]
         assert WEIGHT_AGENT_USABILITY == 0.15
 
-    def test_enhanced_score_with_missing_categories(self, clean_server, full_static):
-        """Enhanced scoring works even when some standard categories are missing."""
+    def test_limited_with_agent_and_missing_categories(self, clean_server, full_static):
+        """Limited visibility: has agent_usability but missing applicable dims."""
         result = compute_score(
             clean_server,
             full_static,
@@ -533,16 +549,16 @@ class TestAgentUsability:
             reliability=None,
             agent_usability=75,
         )
-        # Only 1 standard tier (static), so stays partial even with agent_usability
-        assert result.score_type == "partial"
-        assert result.composite_score is None  # No composite for partials
+        assert result.visibility_level == "limited"
+        assert result.score_type == "partial"  # backward compat
+        assert result.composite_score is not None  # limited gets composite
         assert result.agent_usability_score == 75
 
-    def test_remote_two_tiers_plus_agent_is_enhanced(self, clean_server, full_static, full_deep_probe):
-        """Remote server with static + probe + agent_usability → enhanced.
+    def test_remote_two_tiers_plus_agent_is_complete(self, clean_server, full_static, full_deep_probe):
+        """Remote server with static + probe + agent_usability → complete.
 
         Reliability is not applicable without probe history data, so
-        all applicable dimensions are filled → enhanced.
+        all applicable dimensions are filled + agent_usability → complete.
         """
         result = compute_score(
             clean_server,
@@ -550,15 +566,16 @@ class TestAgentUsability:
             full_deep_probe,
             agent_usability=70,
         )
-        assert result.score_type == "enhanced"
+        assert result.visibility_level == "complete"
+        assert result.score_type == "enhanced"  # backward compat
         assert result.grade != ""
 
 
 class TestLocalServerScoring:
     """Tests for applicability-aware scoring of local (stdio-only) servers."""
 
-    def test_local_with_all_applicable_is_full(self, full_static):
-        """Local server with schema + docs_maintenance + security → full with grade."""
+    def test_local_with_all_applicable_is_assessed(self, full_static):
+        """Local server with schema + docs_maintenance + security → assessed (no live probe)."""
         server = ServerInfo(
             name="local/mcp-server",
             description="A local MCP server",
@@ -567,36 +584,44 @@ class TestLocalServerScoring:
             registry_metadata={"env_vars": ["API_KEY"]},
         )
         result = compute_score(server, static_result=full_static)
-        assert result.score_type == "full"
+        assert result.visibility_level == "assessed"  # all applicable, no live probe
+        assert result.score_type == "full"  # backward compat
         assert result.grade != ""
+        assert result.dimensions_scored == 3
+        assert result.dimensions_applicable == 3  # schema, docs, security
         assert result.schema_quality_score is not None
         assert result.docs_maintenance_score is not None
         assert result.security_score is not None
         assert result.protocol_score is None
         assert result.reliability_score is None
 
-    def test_local_with_only_security_is_partial(self):
-        """Local server with only security data → partial, no grade."""
+    def test_local_with_only_security_is_unscored(self):
+        """Local server with only security data → unscored (1 dim)."""
         server = ServerInfo(
             name="local/bare-server",
             is_remote=False,
             registry_metadata={"env_vars": []},
         )
         result = compute_score(server)
-        assert result.score_type == "partial"
+        assert result.visibility_level == "unscored"
+        assert result.score_type == "partial"  # backward compat
+        assert result.composite_score is None
         assert result.grade == ""
+        assert result.dimensions_scored == 1
         assert result.security_score is not None
 
-    def test_remote_needs_all_five_for_full(self, full_static):
-        """Remote server with only static analysis → partial."""
+    def test_remote_without_probe_is_limited(self, full_static):
+        """Remote server with only static analysis → limited (missing protocol)."""
         server = ServerInfo(
             name="remote/test",
             is_remote=True,
             registry_metadata={"env_vars": []},
         )
         result = compute_score(server, static_result=full_static)
-        assert result.score_type == "partial"
-        assert result.grade == ""
+        assert result.visibility_level == "limited"
+        assert result.score_type == "partial"  # backward compat
+        assert result.composite_score is not None  # limited gets composite
+        assert result.grade != ""
 
     def test_remote_with_all_five_is_full(
         self, clean_server, full_static, full_deep_probe, full_reliability
@@ -608,8 +633,8 @@ class TestLocalServerScoring:
         assert result.score_type == "full"
         assert result.grade != ""
 
-    def test_local_full_plus_agent_is_enhanced(self, full_static):
-        """Local server with all applicable + agent_usability → enhanced."""
+    def test_local_full_plus_agent_is_complete(self, full_static):
+        """Local server with all applicable + agent_usability → complete."""
         server = ServerInfo(
             name="local/enhanced-server",
             is_remote=False,
@@ -619,9 +644,11 @@ class TestLocalServerScoring:
         result = compute_score(
             server, static_result=full_static, agent_usability=80
         )
-        assert result.score_type == "enhanced"
+        assert result.visibility_level == "complete"
+        assert result.score_type == "enhanced"  # backward compat
         assert result.grade != ""
         assert result.agent_usability_score == 80
+        assert result.dimensions_scored == 4  # schema, docs, security, agent
 
     def test_local_score_reaches_100(self, full_static):
         """Local servers can reach 100/100 on their applicable dimensions."""
@@ -654,8 +681,8 @@ class TestLocalServerScoring:
 class TestSandboxProbedScoring:
     """Tests for local servers probed via Docker sandbox."""
 
-    def test_local_probed_with_protocol_is_full(self, full_static):
-        """Local probed server with schema + protocol + docs + security → full."""
+    def test_local_probed_with_protocol_is_verified(self, full_static):
+        """Local probed server with schema + protocol + docs + security → verified."""
         server = ServerInfo(
             name="local/probed",
             is_remote=False,
@@ -670,12 +697,13 @@ class TestSandboxProbedScoring:
             fuzz_score=70,
         )
         result = compute_score(server, static_result=full_static, deep_probe=deep)
-        assert result.score_type == "full"
+        assert result.visibility_level == "verified"  # all applicable + live probe
+        assert result.score_type == "full"  # backward compat
         assert result.grade != ""
         assert result.protocol_score is not None
 
-    def test_local_probed_missing_protocol_is_partial(self, full_static):
-        """Local probed server without protocol data → partial (protocol is now applicable)."""
+    def test_local_probed_missing_protocol_is_limited(self, full_static):
+        """Local probed server without protocol data → limited (protocol applicable but missing)."""
         server = ServerInfo(
             name="local/probed-no-protocol",
             is_remote=False,
@@ -684,11 +712,13 @@ class TestSandboxProbedScoring:
             repo_url="https://github.com/test/probed-no-proto",
         )
         result = compute_score(server, static_result=full_static)
-        assert result.score_type == "partial"
+        assert result.visibility_level == "limited"
+        assert result.score_type == "partial"  # backward compat
+        assert result.composite_score is not None  # limited gets composite
         assert result.protocol_score is None
 
-    def test_unprobed_local_without_protocol_is_full(self, full_static):
-        """Unprobed local server without protocol → full (protocol not applicable)."""
+    def test_unprobed_local_without_protocol_is_assessed(self, full_static):
+        """Unprobed local server without protocol → assessed (all applicable, no live probe)."""
         server = ServerInfo(
             name="local/unprobed",
             is_remote=False,
@@ -697,7 +727,8 @@ class TestSandboxProbedScoring:
             repo_url="https://github.com/test/unprobed",
         )
         result = compute_score(server, static_result=full_static)
-        assert result.score_type == "full"
+        assert result.visibility_level == "assessed"
+        assert result.score_type == "full"  # backward compat
         assert result.grade != ""
 
 
@@ -808,3 +839,150 @@ class TestFlagScoreCaps:
         )
         result = compute_score(server, full_static, full_deep_probe, full_reliability)
         assert result.composite_score == 0
+
+
+class TestVisibilityLevels:
+    """Dedicated tests for the 5-tier visibility model."""
+
+    def test_complete_requires_all_plus_agent(
+        self, clean_server, full_static, full_deep_probe, full_reliability
+    ):
+        """Complete = all applicable dims + agent_usability."""
+        result = compute_score(
+            clean_server, full_static, full_deep_probe, full_reliability,
+            agent_usability=85,
+        )
+        assert result.visibility_level == "complete"
+        assert result.dimensions_scored == 6
+        assert result.composite_score is not None
+
+    def test_verified_requires_all_plus_live_probe(
+        self, clean_server, full_static, full_deep_probe, full_reliability
+    ):
+        """Verified = all applicable dims + live probe, no agent."""
+        result = compute_score(clean_server, full_static, full_deep_probe, full_reliability)
+        assert result.visibility_level == "verified"
+        assert result.dimensions_scored == 5
+        assert result.composite_score is not None
+
+    def test_assessed_all_applicable_no_probe(self, full_static):
+        """Assessed = all applicable dims filled, but no live probe data."""
+        server = ServerInfo(
+            name="local/no-probe",
+            is_remote=False,
+            has_sandbox_probe=False,
+            registry_metadata={"env_vars": []},
+            repo_url="https://github.com/test/no-probe",
+        )
+        result = compute_score(server, static_result=full_static)
+        # Local, unprobed: applicable = schema, docs, security (3)
+        # All 3 filled, no live probe → assessed
+        assert result.visibility_level == "assessed"
+        assert result.dimensions_scored == 3
+        assert result.composite_score is not None
+
+    def test_limited_missing_applicable_dims(self, clean_server, full_static):
+        """Limited = ≥2 dims scored but missing some applicable dims."""
+        # Remote server with static only: protocol applicable but missing
+        result = compute_score(clean_server, static_result=full_static)
+        assert result.visibility_level == "limited"
+        assert result.dimensions_scored == 3  # schema, docs, security
+        assert result.composite_score is not None
+        assert result.grade != ""
+
+    def test_unscored_only_one_dim(self):
+        """Unscored = 0-1 dimensions scored."""
+        server = ServerInfo(
+            name="bare/server",
+            is_remote=True,
+            registry_metadata={"env_vars": []},
+        )
+        result = compute_score(server)
+        assert result.visibility_level == "unscored"
+        assert result.dimensions_scored == 1  # security only
+        assert result.composite_score is None
+        assert result.grade == ""
+
+    def test_visibility_to_score_type_mapping(
+        self, clean_server, full_static, full_deep_probe, full_reliability
+    ):
+        """Verify backward-compatible score_type mapping from visibility."""
+        # Complete → enhanced
+        r = compute_score(
+            clean_server, full_static, full_deep_probe, full_reliability,
+            agent_usability=80,
+        )
+        assert r.visibility_level == "complete"
+        assert r.score_type == "enhanced"
+
+        # Verified → full
+        r = compute_score(clean_server, full_static, full_deep_probe, full_reliability)
+        assert r.visibility_level == "verified"
+        assert r.score_type == "full"
+
+        # Assessed → full
+        local = ServerInfo(
+            name="local/test", is_remote=False,
+            registry_metadata={"env_vars": []},
+            repo_url="https://github.com/test/local",
+        )
+        r = compute_score(local, static_result=full_static)
+        assert r.visibility_level == "assessed"
+        assert r.score_type == "full"
+
+        # Limited → partial
+        r = compute_score(clean_server, static_result=full_static)
+        assert r.visibility_level == "limited"
+        assert r.score_type == "partial"
+
+        # Unscored → partial
+        r = compute_score(ServerInfo())
+        assert r.visibility_level == "unscored"
+        assert r.score_type == "partial"
+
+    def test_dimensions_applicable_remote_with_reliability(
+        self, clean_server, full_static, full_deep_probe, full_reliability
+    ):
+        """Remote with reliability data → 5 applicable dims."""
+        result = compute_score(clean_server, full_static, full_deep_probe, full_reliability)
+        assert result.dimensions_applicable == 5
+
+    def test_dimensions_applicable_remote_no_reliability(
+        self, clean_server, full_static, full_deep_probe
+    ):
+        """Remote without reliability data → 4 applicable dims."""
+        result = compute_score(clean_server, full_static, full_deep_probe)
+        assert result.dimensions_applicable == 4
+
+    def test_dimensions_applicable_local_unprobed(self, full_static):
+        """Local unprobed → 3 applicable dims."""
+        server = ServerInfo(
+            name="local/test", is_remote=False,
+            registry_metadata={"env_vars": []},
+            repo_url="https://github.com/test/local",
+        )
+        result = compute_score(server, static_result=full_static)
+        assert result.dimensions_applicable == 3
+
+    def test_dimensions_applicable_local_probed(self, full_static):
+        """Local probed → 4 applicable dims (protocol via sandbox)."""
+        server = ServerInfo(
+            name="local/probed", is_remote=False, has_sandbox_probe=True,
+            registry_metadata={"env_vars": []},
+            repo_url="https://github.com/test/probed",
+        )
+        deep = DeepProbeResult(
+            is_reachable=True, schema_valid=True, error_handling_score=80,
+        )
+        result = compute_score(server, static_result=full_static, deep_probe=deep)
+        assert result.dimensions_applicable == 4  # schema, protocol, docs, security
+
+    def test_dimensions_applicable_with_agent(
+        self, clean_server, full_static, full_deep_probe, full_reliability
+    ):
+        """Agent_usability adds 1 to applicable count."""
+        result = compute_score(
+            clean_server, full_static, full_deep_probe, full_reliability,
+            agent_usability=80,
+        )
+        assert result.dimensions_applicable == 6  # 5 standard + agent

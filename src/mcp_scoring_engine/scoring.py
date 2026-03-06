@@ -29,15 +29,22 @@ Local vs Remote scoring:
   Protocol and Reliability require a remote endpoint and are structurally
   inapplicable to local (stdio-only) servers.
 
-Score types (applicability-aware):
-  partial  — Some *applicable* dimensions not yet measured (no letter grade)
-  full     — All applicable dimensions scored — receives a letter grade
-  enhanced — Full + agent usability evaluation
+Visibility levels (data completeness):
+  complete — All 6 dimensions including agent usability
+  verified — All applicable standard dims with live probe data
+  assessed — All applicable standard dims (e.g. 3-dim local server)
+  limited  — 2+ dimensions scored, but not all applicable
+  unscored — 0-1 dimensions, no composite produced
 
-  A local server with Schema + Maintenance + Security all scored → "full".
-  A remote server needs all 5 dimensions scored → "full".
+  Servers with ≥2 scored dimensions always get a composite score and grade.
+  Only "unscored" servers have no composite.
 
-Grade thresholds (full/enhanced only):
+Score types (backward-compatible, mapped from visibility):
+  partial  — maps from "limited" or "unscored"
+  full     — maps from "assessed" or "verified"
+  enhanced — maps from "complete"
+
+Grade thresholds (all visibility levels except unscored):
   A+ 95-100 | A 85-94 | B 70-84 | C 55-69 | D 40-54 | F 0-39
 """
 
@@ -424,7 +431,7 @@ def compute_score(
     if has_template_flag and schema_quality is not None:
         schema_quality = max(0, schema_quality - 15)
 
-    # ── Determine score type (applicability-aware) ──────────────────
+    # ── Determine applicability and visibility ────────────────────────
     # Remote (probed): 5 dimensions (schema, protocol, reliability, docs, security)
     # Remote (unprobed): 4 dimensions (schema, protocol, docs, security)
     #   - reliability requires accumulated probe history; having an endpoint
@@ -455,9 +462,39 @@ def compute_score(
     )
 
     has_agent_usability = agent_usability is not None
+
+    # Count dimensions
+    category_scores = [
+        schema_quality, protocol, reliability_score,
+        docs_maintenance, security, agent_usability,
+    ]
+    dims_scored = sum(1 for v in category_scores if v is not None)
+    dims_applicable = sum(1 for applies in applicable.values() if applies)
+    if has_agent_usability:
+        dims_applicable += 1  # agent_usability counted when provided
+
+    # Has live probe data? (deep probe or sandbox, not just inference)
+    has_live_probe = (protocol is not None) and (
+        (deep_probe is not None and deep_probe.is_reachable is not None)
+        or has_sandbox_probe
+    )
+
+    # ── Determine visibility level ─────────────────────────────────────
     if all_applicable_filled and has_agent_usability:
-        score_type = "enhanced"
+        visibility_level = "complete"
+    elif all_applicable_filled and has_live_probe:
+        visibility_level = "verified"
     elif all_applicable_filled:
+        visibility_level = "assessed"
+    elif dims_scored >= 2:
+        visibility_level = "limited"
+    else:
+        visibility_level = "unscored"
+
+    # Backward-compatible score_type mapped from visibility
+    if visibility_level == "complete":
+        score_type = "enhanced"
+    elif visibility_level in ("verified", "assessed"):
         score_type = "full"
     else:
         score_type = "partial"
@@ -508,10 +545,10 @@ def compute_score(
     if total_weight == 0:
         return result
 
-    # ── Partial servers: suppress misleading composite ─────────────────
-    # Weight normalization inflates composites for data-poor servers.
-    # Only full/enhanced servers get a composite score and grade.
-    if score_type == "partial":
+    # ── Compute composite for all servers with ≥2 dimensions ──────────
+    # Unscored servers (0-1 dims) get no composite.
+    # All other visibility levels get a weighted composite and grade.
+    if visibility_level == "unscored":
         result.composite_score = None
         result.grade = ""
     else:
@@ -528,6 +565,9 @@ def compute_score(
 
     # ── Store results ─────────────────────────────────────────────────
     result.score_type = score_type
+    result.visibility_level = visibility_level
+    result.dimensions_scored = dims_scored
+    result.dimensions_applicable = dims_applicable
     result.schema_quality_score = schema_quality
     result.protocol_score = protocol
     result.reliability_score = reliability_score
