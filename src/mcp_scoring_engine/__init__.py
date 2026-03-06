@@ -13,6 +13,12 @@ from .probes.reliability import compute_reliability_score
 from .probes.entry_point import detect_entry_point, make_github_file_reader
 from .probes.static import analyze_repo
 from .probes.reliability import MINIMUM_PROBE_COUNT
+from .probes.spec_version import (
+    SpecVersionResult,
+    detect_spec_from_sdk,
+    detect_spec_from_source_markers,
+)
+from .security import scan_tool_descriptions
 from .scoring import (
     compute_score,
     extract_publisher,
@@ -82,4 +88,10 @@ __all__ = [
     "classify_server",
     "detect_flags",
     "generate_badges",
+    # Spec version detection
+    "SpecVersionResult",
+    "detect_spec_from_sdk",
+    "detect_spec_from_source_markers",
+    # Security scanning
+    "scan_tool_descriptions",
 ]

@@ -65,6 +65,14 @@ class DeepProbeResult:
     fuzz_details: dict = field(default_factory=dict)
     auth_discovery_valid: bool | None = None
 
+    # Functional smoke test fields
+    functional_smoke_score: int | None = None
+    functional_smoke_details: dict = field(default_factory=dict)
+
+    # Spec version / capabilities fields
+    protocol_version: str | None = None
+    server_capabilities: dict = field(default_factory=dict)
+
 
 @dataclass
 class StaticAnalysis:

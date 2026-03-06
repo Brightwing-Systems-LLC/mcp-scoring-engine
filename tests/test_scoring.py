@@ -248,8 +248,8 @@ class TestComputeSecurity:
             repo_url="https://github.com/test/test",
         )
         score = _compute_security_score(server)
-        # 35 + 25 + 25 + 12 (repo only) = 97
-        assert score == 97
+        # 20 + 15 + 15 + 12 (repo only) + 18 (behavioral default) = 80
+        assert score == 80
 
     def test_many_secrets(self):
         server = ServerInfo(
@@ -265,8 +265,8 @@ class TestComputeSecurity:
             },
         )
         score = _compute_security_score(server)
-        # 0 + 10 + 3 + 3 = 16
-        assert score == 16
+        # 0 + 6 + 2 + 3 + 18 = 29
+        assert score == 29
 
     def test_distribution_clarity_repo_and_package(self):
         """Source repo + published package → 15 pts (fully verifiable)."""
@@ -276,8 +276,8 @@ class TestComputeSecurity:
             registry_metadata={"env_vars": []},
         )
         score = _compute_security_score(server)
-        # 35 + 10 + 25 + 15 = 85
-        assert score == 85
+        # 20 + 6 + 15 + 15 + 18 = 74
+        assert score == 74
 
     def test_distribution_clarity_repo_only(self):
         """Source repo only → 12 pts (auditable from source)."""
@@ -286,8 +286,8 @@ class TestComputeSecurity:
             registry_metadata={"env_vars": []},
         )
         score = _compute_security_score(server)
-        # 35 + 10 + 25 + 12 = 82
-        assert score == 82
+        # 20 + 6 + 15 + 12 + 18 = 71
+        assert score == 71
 
     def test_distribution_clarity_package_only(self):
         """Published package without source → 8 pts (can't verify)."""
@@ -296,8 +296,8 @@ class TestComputeSecurity:
             registry_metadata={"env_vars": []},
         )
         score = _compute_security_score(server)
-        # 35 + 10 + 25 + 8 = 78
-        assert score == 78
+        # 20 + 6 + 15 + 8 + 18 = 67
+        assert score == 67
 
     def test_mongo_uri_detected_as_high_sensitivity(self):
         """MONGO_URI should be detected as high-sensitivity credential."""
@@ -305,11 +305,10 @@ class TestComputeSecurity:
             registry_metadata={"env_vars": ["MONGO_URI", "PORT"]},
         )
         score = _compute_security_score(server)
-        # secret: 0 sensitive → 35, transport: remote → 10
-        # cred: 1 high_sens (MONGO_URI) → 10, dist: 3
-        # But MONGO_URI doesn't match secret_pattern, PORT doesn't either
-        # So: secret=35, transport=10, cred=10 (1 high_sens), dist=3 → 58
-        assert score == 58
+        # secret: 0 sensitive → 20, transport: remote → 6
+        # cred: 1 high_sens (MONGO_URI) → 6, dist: 3, behavioral: 18
+        # So: 20 + 6 + 6 + 3 + 18 = 53
+        assert score == 53
 
 
 class TestComputeScore:
@@ -629,7 +628,11 @@ class TestLocalServerScoring:
         server = ServerInfo(
             name="local/perfect-server",
             is_remote=False,
-            registry_metadata={"env_vars": [], "transport": "stdio"},
+            registry_metadata={
+                "env_vars": [],
+                "transport": "stdio",
+                "behavioral_security": {"behavioral_security_score": 100},
+            },
             repo_url="https://github.com/test/perfect",
             npm_url="https://npmjs.com/package/perfect-mcp",
         )

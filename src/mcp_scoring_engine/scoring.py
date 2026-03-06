@@ -87,6 +87,8 @@ FLAG_SCORE_CAPS = {
     "DEAD_REPO": 0,  # Dead repos get 0 — no exceptions
     "REPO_ARCHIVED": 40,  # Archived = max D grade
     "STAGING_ARTIFACT": 55,  # Staging URLs = max C grade
+    "PROMPT_INJECTION": 30,  # Injection risk = max D- grade
+    "EXFILTRATION_RISK": 25,  # Exfiltration risk = F grade
 }
 
 # ── Grade thresholds ──────────────────────────────────────────────────
@@ -206,7 +208,8 @@ _compute_schema_docs_score = _compute_schema_quality_score
 def _compute_protocol_score(deep_probe: DeepProbeResult | None) -> int | None:
     """Compute Protocol Compliance category score.
 
-    Components: reachability, schema validity, error handling, fuzz resilience.
+    Components: reachability, schema validity, error handling, fuzz resilience,
+    functional smoke test.
     Auth discovery bonus: +10 if auth_discovery_valid is True (capped at 100).
     Servers without auth discovery are not penalized.
     """
@@ -225,6 +228,9 @@ def _compute_protocol_score(deep_probe: DeepProbeResult | None) -> int | None:
 
     if deep_probe.fuzz_score is not None:
         components.append(deep_probe.fuzz_score)
+
+    if deep_probe.functional_smoke_score is not None:
+        components.append(deep_probe.functional_smoke_score)
 
     if not components:
         return None
@@ -275,10 +281,11 @@ def _compute_security_score(server: ServerInfo) -> int | None:
     """Compute Security & Permissions category score.
 
     Analyzes registry metadata for security posture:
-    - Secret env var count (35pts)
-    - Transport risk (25pts)
-    - Credential sensitivity (25pts)
+    - Secret env var count (20pts)
+    - Transport risk (15pts)
+    - Credential sensitivity (15pts)
     - Distribution clarity (15pts)
+    - Behavioral security (35pts) — from source code analysis
     """
     import re
 
@@ -290,31 +297,31 @@ def _compute_security_score(server: ServerInfo) -> int | None:
         re.IGNORECASE,
     )
 
-    # 1. Secret env var count (35 pts)
+    # 1. Secret env var count (20 pts)
     sensitive_vars = [v for v in env_vars if secret_pattern.search(v)]
     num_sensitive = len(sensitive_vars)
     if num_sensitive == 0:
-        secret_score = 35
-    elif num_sensitive == 1:
-        secret_score = 28
-    elif num_sensitive == 2:
         secret_score = 20
+    elif num_sensitive == 1:
+        secret_score = 16
+    elif num_sensitive == 2:
+        secret_score = 11
     elif num_sensitive <= 4:
-        secret_score = 10
+        secret_score = 6
     else:
         secret_score = 0
 
-    # 2. Transport risk (25 pts)
+    # 2. Transport risk (15 pts)
     is_remote = server.is_remote
     transport = meta.get("transport", "")
     if not is_remote and transport != "sse":
-        transport_score = 25
-    elif transport == "sse":
         transport_score = 15
+    elif transport == "sse":
+        transport_score = 9
     else:
-        transport_score = 10
+        transport_score = 6
 
-    # 3. Credential sensitivity (25 pts)
+    # 3. Credential sensitivity (15 pts)
     high_sensitivity = re.compile(
         r"(private[_-]?key|database|db_|postgres|mysql|redis|mongo"
         r"|aws_secret|azure[_-]?secret|gcp[_-]?key|gcloud"
@@ -325,28 +332,37 @@ def _compute_security_score(server: ServerInfo) -> int | None:
     )
     high_sens_count = len([v for v in env_vars if high_sensitivity.search(v)])
     if high_sens_count == 0 and num_sensitive == 0:
-        cred_score = 25
+        cred_score = 15
     elif high_sens_count == 0:
-        cred_score = 18
+        cred_score = 11
     elif high_sens_count <= 2:
-        cred_score = 10
+        cred_score = 6
     else:
-        cred_score = 3
+        cred_score = 2
 
     # 4. Distribution clarity (15 pts)
-    # Can users verify what they're installing?
     has_package = bool(server.npm_url or server.pypi_url or server.dockerhub_url)
     has_repo = bool(server.repo_url)
     if has_package and has_repo:
-        dist_score = 15  # Verifiable: published + source available
+        dist_score = 15
     elif has_repo:
-        dist_score = 12  # Fully auditable from source
+        dist_score = 12
     elif has_package:
-        dist_score = 8  # Published but can't verify source
+        dist_score = 8
     else:
         dist_score = 3
 
-    total = secret_score + transport_score + cred_score + dist_score
+    # 5. Behavioral security (35 pts)
+    behavioral = meta.get("behavioral_security", {})
+    if isinstance(behavioral, dict) and "behavioral_security_score" in behavioral:
+        # Scale 0-100 score to 0-35 pts
+        raw = max(0, min(100, behavioral["behavioral_security_score"]))
+        behavioral_score = int(raw * 35 / 100)
+    else:
+        # Default: neutral score (50/100 → 17.5/35 → 18)
+        behavioral_score = 18
+
+    total = secret_score + transport_score + cred_score + dist_score + behavioral_score
     return max(0, min(100, total))
 
 
@@ -383,6 +399,14 @@ def compute_score(
     reliability_score = _compute_reliability_score(reliability)
     docs_maintenance = _compute_docs_maintenance_score(static_result) if static_result else None
     security = _compute_security_score(server)
+
+    # Spec version bonus: +5 to docs_maintenance for latest spec
+    meta = server.registry_metadata or {}
+    spec_info = meta.get("spec_version", {})
+    if isinstance(spec_info, dict) and docs_maintenance is not None:
+        detected = spec_info.get("detected_spec_version", "")
+        if detected >= "2025-11-25":
+            docs_maintenance = min(100, docs_maintenance + 5)
 
     # ── Classification, publisher, verification ───────────────────────
     category, targets = classify_server(server)

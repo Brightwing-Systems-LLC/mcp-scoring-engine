@@ -64,6 +64,10 @@ def detect_flags(server: ServerInfo, context: FlagContext | None = None) -> list
     flags.extend(_check_description_duplicate(server, context))
     flags.extend(_check_schema_drift(server))
     flags.extend(_check_ambiguous_schema(server))
+    flags.extend(_check_outdated_spec(server))
+    flags.extend(_check_prompt_injection(server))
+    flags.extend(_check_exfiltration_risk(server))
+    flags.extend(_check_stale_analysis(server))
 
     return flags
 
@@ -292,3 +296,94 @@ def _check_ambiguous_schema(server: ServerInfo) -> list[Flag]:
             ),
         )
     ]
+
+
+def _check_outdated_spec(server: ServerInfo) -> list[Flag]:
+    """Server implements an outdated MCP spec version."""
+    meta = server.registry_metadata or {}
+    spec = meta.get("spec_version", {})
+    if not isinstance(spec, dict):
+        return []
+    version = spec.get("detected_spec_version", "")
+    if version == "2024-11-05":
+        return [
+            Flag(
+                key="OUTDATED_SPEC",
+                severity="warning",
+                label="Outdated MCP Spec",
+                description=(
+                    "Implements the original MCP spec (2024-11-05). "
+                    "Missing StreamableHTTP, OAuth 2.1, and modern features."
+                ),
+            )
+        ]
+    return []
+
+
+def _check_prompt_injection(server: ServerInfo) -> list[Flag]:
+    """Tool descriptions contain prompt injection patterns."""
+    meta = server.registry_metadata or {}
+    behavioral = meta.get("behavioral_security", {})
+    if not isinstance(behavioral, dict):
+        return []
+    if behavioral.get("prompt_injection_found"):
+        return [
+            Flag(
+                key="PROMPT_INJECTION",
+                severity="critical",
+                label="Prompt Injection Risk",
+                description="Tool descriptions contain patterns that could manipulate AI agents.",
+            )
+        ]
+    return []
+
+
+def _check_exfiltration_risk(server: ServerInfo) -> list[Flag]:
+    """Source code shows data exfiltration patterns."""
+    meta = server.registry_metadata or {}
+    behavioral = meta.get("behavioral_security", {})
+    if not isinstance(behavioral, dict):
+        return []
+    if behavioral.get("exfiltration_risk"):
+        return [
+            Flag(
+                key="EXFILTRATION_RISK",
+                severity="critical",
+                label="Exfiltration Risk",
+                description="Source code contains patterns that may send data to unexpected destinations.",
+            )
+        ]
+    return []
+
+
+def _check_stale_analysis(server: ServerInfo) -> list[Flag]:
+    """Static analysis data is older than 60 days."""
+    meta = server.registry_metadata or {}
+    last_analyzed = meta.get("last_analyzed_at")
+    if not last_analyzed:
+        return []
+
+    if isinstance(last_analyzed, str):
+        try:
+            last_analyzed = datetime.fromisoformat(last_analyzed.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return []
+
+    if not isinstance(last_analyzed, datetime):
+        return []
+
+    if last_analyzed.tzinfo is None:
+        last_analyzed = last_analyzed.replace(tzinfo=timezone.utc)
+
+    age = datetime.now(timezone.utc) - last_analyzed
+    if age > timedelta(days=60):
+        days = age.days
+        return [
+            Flag(
+                key="STALE_ANALYSIS",
+                severity="warning",
+                label="Stale Analysis",
+                description=f"Static analysis data is {days} days old. Results may not reflect current state.",
+            )
+        ]
+    return []

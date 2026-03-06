@@ -234,6 +234,124 @@ async def _test_fuzz_inputs(session: ClientSession, tools: list) -> tuple[int, d
     return score, details
 
 
+def _generate_value_from_schema(prop_def: dict) -> object:
+    """Generate a plausible value from a JSON Schema property definition."""
+    if not isinstance(prop_def, dict):
+        return "test"
+
+    # Use example/default if provided
+    if "examples" in prop_def and prop_def["examples"]:
+        return prop_def["examples"][0]
+    if "default" in prop_def:
+        return prop_def["default"]
+
+    ptype = prop_def.get("type", "string")
+
+    if "enum" in prop_def and prop_def["enum"]:
+        return prop_def["enum"][0]
+
+    if ptype == "string":
+        fmt = prop_def.get("format", "")
+        if fmt == "uri" or fmt == "url":
+            return "https://example.com"
+        if fmt == "email":
+            return "test@example.com"
+        if fmt == "date":
+            return "2025-01-01"
+        if fmt == "date-time":
+            return "2025-01-01T00:00:00Z"
+        return "test"
+    elif ptype == "integer":
+        return prop_def.get("minimum", 1)
+    elif ptype == "number":
+        return prop_def.get("minimum", 1.0)
+    elif ptype == "boolean":
+        return True
+    elif ptype == "array":
+        items = prop_def.get("items", {})
+        return [_generate_value_from_schema(items)]
+    elif ptype == "object":
+        props = prop_def.get("properties", {})
+        return {k: _generate_value_from_schema(v) for k, v in props.items()} if props else {}
+    return "test"
+
+
+def _generate_args_from_schema(schema: dict) -> dict:
+    """Generate valid arguments from a tool's inputSchema."""
+    if not isinstance(schema, dict):
+        return {}
+
+    properties = schema.get("properties", {})
+    required = set(schema.get("required", []))
+    args = {}
+
+    # Always include required params, include up to 5 optional params
+    for name, prop_def in properties.items():
+        if name in required or len(args) < 5:
+            args[name] = _generate_value_from_schema(prop_def)
+
+    return args
+
+
+SMOKE_TEST_TIMEOUT = 10  # seconds per tool call
+
+
+async def _test_functional_smoke(session: ClientSession, tools: list) -> tuple[int, dict]:
+    """Smoke test: call tools with schema-valid inputs, check for structured responses.
+
+    For each tool with a well-defined inputSchema:
+    1. Generate valid inputs from JSON Schema
+    2. Call the tool with valid inputs
+    3. Check: returns non-error result within timeout with structured content
+
+    Returns (score 0-100, details dict).
+    """
+    testable_tools = []
+    for t in tools:
+        schema = getattr(t, "inputSchema", None)
+        if isinstance(schema, dict) and schema.get("type") == "object":
+            testable_tools.append(t)
+
+    if not testable_tools:
+        return 50, {"note": "no_testable_tools", "tools_tested": 0}
+
+    # Test up to 5 tools to keep probe time reasonable
+    testable_tools = testable_tools[:5]
+    passed = 0
+    total = len(testable_tools)
+    per_tool = {}
+
+    for tool in testable_tools:
+        tool_name = getattr(tool, "name", str(tool))
+        args = _generate_args_from_schema(tool.inputSchema)
+
+        try:
+            result = await asyncio.wait_for(
+                session.call_tool(tool_name, args),
+                timeout=SMOKE_TEST_TIMEOUT,
+            )
+            if result and getattr(result, "isError", False):
+                per_tool[tool_name] = "error_response"
+            elif result and getattr(result, "content", None):
+                passed += 1
+                per_tool[tool_name] = "pass"
+            else:
+                per_tool[tool_name] = "empty_response"
+        except asyncio.TimeoutError:
+            per_tool[tool_name] = "timeout"
+        except BaseException as e:
+            real = _unwrap_exception(e)
+            per_tool[tool_name] = f"exception: {type(real).__name__}"
+
+    score = int((passed / total) * 100) if total else 50
+    details = {
+        "tools_tested": total,
+        "tools_passed": passed,
+        "per_tool": per_tool,
+    }
+    return score, details
+
+
 async def _check_auth_discovery(url: str) -> bool | None:
     """Check if the server implements OAuth discovery per MCP auth spec."""
     from urllib.parse import urlparse
@@ -264,9 +382,25 @@ async def _run_deep_probe_session(session: ClientSession, result: DeepProbeResul
     """Run all deep probe checks on an established MCP session."""
     # Phase 1: Initialize
     t_init_start = time.monotonic()
-    await session.initialize()
+    init_result = await session.initialize()
     t_init_end = time.monotonic()
     result.initialize_ms = int((t_init_end - t_init_start) * 1000)
+
+    # Capture protocol version and server capabilities from initialize response
+    if init_result:
+        result.protocol_version = getattr(init_result, "protocolVersion", None)
+        caps = getattr(init_result, "capabilities", None)
+        if caps:
+            # Convert capabilities object to dict for storage
+            try:
+                if hasattr(caps, "model_dump"):
+                    result.server_capabilities = caps.model_dump(exclude_none=True)
+                elif hasattr(caps, "__dict__"):
+                    result.server_capabilities = {
+                        k: v for k, v in vars(caps).items() if v is not None
+                    }
+            except Exception:
+                pass
 
     # Phase 2: Ping
     t_ping_start = time.monotonic()
@@ -312,6 +446,16 @@ async def _run_deep_probe_session(session: ClientSession, result: DeepProbeResul
         real = _unwrap_exception(e)
         result.fuzz_score = 0
         result.fuzz_details = {"error": f"{type(real).__name__}: {real}"}
+
+    # Phase 7: Functional smoke tests
+    try:
+        smoke_score, smoke_details = await _test_functional_smoke(session, tools)
+        result.functional_smoke_score = smoke_score
+        result.functional_smoke_details = smoke_details
+    except BaseException as e:
+        real = _unwrap_exception(e)
+        result.functional_smoke_score = 0
+        result.functional_smoke_details = {"error": f"{type(real).__name__}: {real}"}
 
 
 async def _deep_probe_server_http(url: str) -> DeepProbeResult:
