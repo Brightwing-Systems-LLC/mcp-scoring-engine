@@ -298,7 +298,7 @@ def _probe_schema_completeness(
     tool_defs_found = 0
     files_checked = 0
     tool_source_files = []
-    non_tool_source_files = []  # For confirmed MCP fallback
+    all_source_files = []  # All fetched source files for inference passes
 
     MAX_SOURCE_BYTES = 25_000  # Cap per file to control token budget
     MAX_FILES = 20
@@ -318,6 +318,12 @@ def _probe_schema_completeness(
         except Exception:
             continue
 
+        file_entry = {
+            "path": path,
+            "content": content[:MAX_SOURCE_BYTES],
+        }
+        all_source_files.append(file_entry)
+
         has_tool_pattern = False
         for pattern in TOOL_DEF_PATTERNS:
             if pattern.search(content):
@@ -331,31 +337,26 @@ def _probe_schema_completeness(
 
         # Retain source for files with tool patterns (for LLM extraction)
         if has_tool_pattern:
-            tool_source_files.append(
-                {
-                    "path": path,
-                    "content": content[:MAX_SOURCE_BYTES],
-                }
-            )
-        elif confirmed_mcp:
-            non_tool_source_files.append(
-                {
-                    "path": path,
-                    "content": content[:MAX_SOURCE_BYTES],
-                }
-            )
+            tool_source_files.append(file_entry)
 
     # For confirmed MCP projects with few tool-pattern matches, include
-    # additional source files to enable behavioral security / spec detection
+    # additional source files in tool_source_files for tool extraction
     if confirmed_mcp and len(tool_source_files) < 3:
-        for extra in non_tool_source_files[: 5 - len(tool_source_files)]:
-            tool_source_files.append(extra)
+        for f in all_source_files:
+            if f not in tool_source_files:
+                tool_source_files.append(f)
+                if len(tool_source_files) >= 5:
+                    break
 
     details["tool_files_found"] = tool_defs_found
     details["schema_markers_found"] = sorted(markers_found)
     details["files_checked"] = files_checked
     if tool_source_files:
         details["tool_source_files"] = tool_source_files
+    # Always provide source_files for inference passes (behavioral security,
+    # spec version, etc.) regardless of tool pattern matches
+    if all_source_files:
+        details["source_files"] = all_source_files
 
     if tool_defs_found == 0:
         return 40, {**details, "issues": ["no_tool_definitions_found"]}
