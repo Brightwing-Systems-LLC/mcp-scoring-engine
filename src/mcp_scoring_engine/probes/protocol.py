@@ -386,9 +386,13 @@ async def _run_deep_probe_session(session: ClientSession, result: DeepProbeResul
     t_init_end = time.monotonic()
     result.initialize_ms = int((t_init_end - t_init_start) * 1000)
 
-    # Capture protocol version and server capabilities from initialize response
+    # Capture protocol version, server info, and capabilities from initialize response
     if init_result:
         result.protocol_version = getattr(init_result, "protocolVersion", None)
+        server_info = getattr(init_result, "serverInfo", None)
+        if server_info:
+            result.server_name = getattr(server_info, "name", "") or ""
+            result.server_version = getattr(server_info, "version", "") or ""
         caps = getattr(init_result, "capabilities", None)
         if caps:
             # Convert capabilities object to dict for storage

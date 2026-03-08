@@ -72,6 +72,8 @@ class DeepProbeResult:
     # Spec version / capabilities fields
     protocol_version: str | None = None
     server_capabilities: dict = field(default_factory=dict)
+    server_name: str = ""
+    server_version: str = ""
 
 
 @dataclass
