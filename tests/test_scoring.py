@@ -164,8 +164,8 @@ class TestComputeReliability:
     def test_full_data(self, full_reliability):
         score = _compute_reliability_score(full_reliability)
         # p50=145→95, p95=380→78, uptime=98.5
-        # 98.5*0.60 + 95*0.25 + 78*0.15 = 59.1 + 23.75 + 11.7 = 94.55 → 94
-        assert score == 94
+        # 98.5*0.75 + 95*0.15 + 78*0.10 = 73.875 + 14.25 + 7.8 = 95.925 → 95
+        assert score == 95
 
     def test_latency_only(self):
         """CLI mode (probe_count=0): continuous latency scoring."""
@@ -248,8 +248,8 @@ class TestComputeSecurity:
             repo_url="https://github.com/test/test",
         )
         score = _compute_security_score(server)
-        # 20 + 15 + 15 + 12 (repo only) + 18 (behavioral default) = 80
-        assert score == 80
+        # No behavioral data → renormalize: (20+15+15+12) * 100/65 = 95
+        assert score == 95
 
     def test_many_secrets(self):
         server = ServerInfo(
@@ -265,8 +265,8 @@ class TestComputeSecurity:
             },
         )
         score = _compute_security_score(server)
-        # 0 + 6 + 2 + 3 + 18 = 29
-        assert score == 29
+        # No behavioral → renormalize: (0+6+2+3) * 100/65 = 16
+        assert score == 16
 
     def test_distribution_clarity_repo_and_package(self):
         """Source repo + published package → 15 pts (fully verifiable)."""
@@ -276,8 +276,8 @@ class TestComputeSecurity:
             registry_metadata={"env_vars": []},
         )
         score = _compute_security_score(server)
-        # 20 + 6 + 15 + 15 + 18 = 74
-        assert score == 74
+        # No behavioral → renormalize: (20+6+15+15) * 100/65 = 86
+        assert score == 86
 
     def test_distribution_clarity_repo_only(self):
         """Source repo only → 12 pts (auditable from source)."""
@@ -286,8 +286,8 @@ class TestComputeSecurity:
             registry_metadata={"env_vars": []},
         )
         score = _compute_security_score(server)
-        # 20 + 6 + 15 + 12 + 18 = 71
-        assert score == 71
+        # No behavioral → renormalize: (20+6+15+12) * 100/65 = 81
+        assert score == 81
 
     def test_distribution_clarity_package_only(self):
         """Published package without source → 8 pts (can't verify)."""
@@ -296,8 +296,8 @@ class TestComputeSecurity:
             registry_metadata={"env_vars": []},
         )
         score = _compute_security_score(server)
-        # 20 + 6 + 15 + 8 + 18 = 67
-        assert score == 67
+        # No behavioral → renormalize: (20+6+15+8) * 100/65 = 75
+        assert score == 75
 
     def test_mongo_uri_detected_as_high_sensitivity(self):
         """MONGO_URI should be detected as high-sensitivity credential."""
@@ -305,9 +305,7 @@ class TestComputeSecurity:
             registry_metadata={"env_vars": ["MONGO_URI", "PORT"]},
         )
         score = _compute_security_score(server)
-        # secret: 0 sensitive → 20, transport: remote → 6
-        # cred: 1 high_sens (MONGO_URI) → 6, dist: 3, behavioral: 18
-        # So: 20 + 6 + 6 + 3 + 18 = 53
+        # No behavioral → renormalize: (20+6+6+3) * 100/65 = 53
         assert score == 53
 
 

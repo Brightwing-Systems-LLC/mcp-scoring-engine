@@ -295,25 +295,67 @@ def _generate_args_from_schema(schema: dict) -> dict:
 
 SMOKE_TEST_TIMEOUT = 10  # seconds per tool call
 
+# Tool name patterns that suggest mutation/destructive operations.
+# These are skipped during smoke testing to avoid side effects.
+import re
+
+_MUTATION_PATTERN = re.compile(
+    r"(delete|remove|drop|destroy|purge|kill|terminate|truncate|wipe"
+    r"|send|post|publish|create|insert|update|write|put|patch"
+    r"|execute|run|invoke|deploy|migrate|transfer|move|cancel"
+    r"|approve|reject|close|merge|assign|unassign)",
+    re.IGNORECASE,
+)
+
+# Safe read-only patterns — override the mutation pattern when matched
+_SAFE_PATTERN = re.compile(
+    r"(get|list|read|search|query|fetch|find|describe|show|count|check|status"
+    r"|info|version|health|ping|echo|help|schema|config|setting)",
+    re.IGNORECASE,
+)
+
+
+def _is_safe_for_smoke_test(tool_name: str) -> bool:
+    """Return True if a tool name looks safe to call during smoke testing."""
+    # If tool name matches a safe read pattern, allow it
+    if _SAFE_PATTERN.search(tool_name):
+        return True
+    # If tool name matches a mutation pattern, skip it
+    if _MUTATION_PATTERN.search(tool_name):
+        return False
+    # Unknown — default to safe (most tools with generic names are read-only)
+    return True
+
 
 async def _test_functional_smoke(session: ClientSession, tools: list) -> tuple[int, dict]:
-    """Smoke test: call tools with schema-valid inputs, check for structured responses.
+    """Invocation smoke test: call tools with schema-valid inputs, check for structured responses.
 
     For each tool with a well-defined inputSchema:
-    1. Generate valid inputs from JSON Schema
-    2. Call the tool with valid inputs
-    3. Check: returns non-error result within timeout with structured content
+    1. Filter out tools with mutation-suggesting names (delete, send, create, etc.)
+    2. Generate valid inputs from JSON Schema
+    3. Call the tool with valid inputs
+    4. Check: returns non-error result within timeout with structured content
 
     Returns (score 0-100, details dict).
     """
     testable_tools = []
+    skipped_tools = []
     for t in tools:
         schema = getattr(t, "inputSchema", None)
-        if isinstance(schema, dict) and schema.get("type") == "object":
+        if not (isinstance(schema, dict) and schema.get("type") == "object"):
+            continue
+        tool_name = getattr(t, "name", str(t))
+        if _is_safe_for_smoke_test(tool_name):
             testable_tools.append(t)
+        else:
+            skipped_tools.append(tool_name)
 
     if not testable_tools:
-        return 50, {"note": "no_testable_tools", "tools_tested": 0}
+        return 50, {
+            "note": "no_testable_tools",
+            "tools_tested": 0,
+            "tools_skipped_mutation": skipped_tools,
+        }
 
     # Test up to 5 tools to keep probe time reasonable
     testable_tools = testable_tools[:5]
@@ -348,6 +390,7 @@ async def _test_functional_smoke(session: ClientSession, tools: list) -> tuple[i
         "tools_tested": total,
         "tools_passed": passed,
         "per_tool": per_tool,
+        "tools_skipped_mutation": skipped_tools,
     }
     return score, details
 
@@ -423,6 +466,23 @@ async def _run_deep_probe_session(session: ClientSession, result: DeepProbeResul
     tools = tools_result.tools if tools_result else []
     result.tools_count = len(tools)
     result.tools = list(tools)
+
+    # Phase 3b: resources/list and prompts/list (non-fatal, informational)
+    try:
+        resources_result = await asyncio.wait_for(
+            session.list_resources(), timeout=5.0
+        )
+        result.resource_count = len(resources_result.resources) if resources_result else 0
+    except Exception:
+        result.resource_count = 0
+
+    try:
+        prompts_result = await asyncio.wait_for(
+            session.list_prompts(), timeout=5.0
+        )
+        result.prompt_count = len(prompts_result.prompts) if prompts_result else 0
+    except Exception:
+        result.prompt_count = 0
 
     # Phase 4: Schema validation
     all_issues = []

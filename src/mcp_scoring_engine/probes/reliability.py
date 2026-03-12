@@ -36,8 +36,10 @@ def compute_reliability_score(data: ReliabilityData) -> int | None:
     Requires at least MINIMUM_PROBE_COUNT probes for a score (data quality gate).
     Exception: CLI mode (probe_count=0, no uptime) skips the gate.
 
-    Blend: uptime 60% + p50 latency 25% + p95 latency 15%.
-    Falls back to uptime 70% + p50 30% when p95 is unavailable.
+    Blend: uptime 75% + p50 latency 15% + p95 latency 10%.
+    Uptime-dominant because latency is geography-dependent (single probe region)
+    while uptime is geography-independent.
+    Falls back to uptime 80% + p50 20% when p95 is unavailable.
     If only latency available (CLI single-run), scores latency only.
     """
     if data is None:
@@ -55,11 +57,11 @@ def compute_reliability_score(data: ReliabilityData) -> int | None:
     p95_score = _score_latency(data.latency_p95_ms) if data.latency_p95_ms is not None else None
 
     if data.uptime_pct is not None and p50_score is not None:
-        # Full blend: uptime 60% + p50 25% + p95 15%
+        # Full blend: uptime 75% + p50 15% + p95 10%
         if p95_score is not None:
-            return int(data.uptime_pct * 0.60 + p50_score * 0.25 + p95_score * 0.15)
-        # No p95: uptime 70% + p50 30%
-        return int(data.uptime_pct * 0.70 + p50_score * 0.30)
+            return int(data.uptime_pct * 0.75 + p50_score * 0.15 + p95_score * 0.10)
+        # No p95: uptime 80% + p50 20%
+        return int(data.uptime_pct * 0.80 + p50_score * 0.20)
     elif data.uptime_pct is not None:
         return int(data.uptime_pct)
     else:

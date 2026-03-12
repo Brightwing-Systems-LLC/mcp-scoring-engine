@@ -69,6 +69,10 @@ class DeepProbeResult:
     functional_smoke_score: int | None = None
     functional_smoke_details: dict = field(default_factory=dict)
 
+    # MCP primitives beyond tools
+    resource_count: int | None = None
+    prompt_count: int | None = None
+
     # Spec version / capabilities fields
     protocol_version: str | None = None
     server_capabilities: dict = field(default_factory=dict)

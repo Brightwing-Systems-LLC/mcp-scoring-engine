@@ -321,12 +321,14 @@ def _compute_security_score(server: ServerInfo) -> int | None:
     # 2. Transport risk (15 pts)
     is_remote = server.is_remote
     transport = meta.get("transport", "")
-    if not is_remote and transport != "sse":
-        transport_score = 15
+    if not is_remote and transport not in ("sse", "streamable-http"):
+        transport_score = 15  # stdio (local) — lowest risk
+    elif transport == "streamable-http":
+        transport_score = 12  # streamable HTTP — stateless, lower risk than SSE
     elif transport == "sse":
-        transport_score = 9
+        transport_score = 9  # SSE — persistent connection
     else:
-        transport_score = 6
+        transport_score = 6  # Remote HTTP (unknown transport) — highest risk
 
     # 3. Credential sensitivity (15 pts)
     high_sensitivity = re.compile(
@@ -359,18 +361,21 @@ def _compute_security_score(server: ServerInfo) -> int | None:
     else:
         dist_score = 3
 
-    # 5. Behavioral security (35 pts)
+    # 5. Behavioral security (20 pts — reduced from 35 to avoid dominating security score)
     behavioral = meta.get("behavioral_security", {})
     if isinstance(behavioral, dict) and "behavioral_security_score" in behavioral:
-        # Scale 0-100 score to 0-35 pts
+        # Scale 0-100 score to 0-20 pts
         raw = max(0, min(100, behavioral["behavioral_security_score"]))
-        behavioral_score = int(raw * 35 / 100)
+        behavioral_score = int(raw * 20 / 100)
     else:
-        # Default: neutral score (50/100 → 17.5/35 → 18)
-        behavioral_score = 18
+        # No source data available — exclude behavioral component entirely
+        # and renormalize from the other 4 sub-scores (out of 65 → scale to 100)
+        static_total = secret_score + transport_score + cred_score + dist_score
+        return max(0, min(100, int(static_total * 100 / 65)))
 
     total = secret_score + transport_score + cred_score + dist_score + behavioral_score
-    return max(0, min(100, total))
+    # Total possible is now 85 (20+15+15+15+20), scale to 100
+    return max(0, min(100, int(total * 100 / 85)))
 
 
 def compute_score(

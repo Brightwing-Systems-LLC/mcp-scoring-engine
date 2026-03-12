@@ -376,24 +376,24 @@ class TestNewFlagScoreCaps:
 
 
 class TestSecurityRebalancing:
-    def test_weights_sum_to_100(self):
-        """All sub-component max values should sum to 100."""
-        # Max values: secret=20, transport=15, cred=15, dist=15, behavioral=35
-        assert 20 + 15 + 15 + 15 + 35 == 100
+    def test_weights_sum_to_85(self):
+        """All sub-component max values should sum to 85 (with behavioral)."""
+        # Max values: secret=20, transport=15, cred=15, dist=15, behavioral=20
+        assert 20 + 15 + 15 + 15 + 20 == 85
 
     def test_zero_secret_stdio_no_behavioral(self):
-        """Zero-secret STDIO without behavioral → ~53 (not old 60)."""
+        """Zero-secret STDIO without behavioral → renormalized from 4 sub-scores."""
         server = ServerInfo(
             is_remote=False,
             registry_metadata={"env_vars": [], "transport": "stdio"},
             repo_url="https://github.com/test/test",
         )
         score = _compute_security_score(server)
-        # 20 + 15 + 15 + 12 + 18 (default behavioral) = 80
-        assert score == 80
+        # No behavioral → renormalize: (20+15+15+12) * 100/65 = 95
+        assert score == 95
 
     def test_zero_secret_stdio_clean_behavioral(self):
-        """Zero-secret STDIO with clean behavioral → ~97."""
+        """Zero-secret STDIO with clean behavioral → scaled from 85."""
         server = ServerInfo(
             is_remote=False,
             registry_metadata={
@@ -404,8 +404,8 @@ class TestSecurityRebalancing:
             repo_url="https://github.com/test/test",
         )
         score = _compute_security_score(server)
-        # 20 + 15 + 15 + 12 + 35 = 97
-        assert score == 97
+        # (20+15+15+12+20) * 100/85 = 96
+        assert score == 96
 
     def test_behavioral_zero(self):
         """Server with dangerous behavioral patterns."""
@@ -419,8 +419,8 @@ class TestSecurityRebalancing:
             repo_url="https://github.com/test/test",
         )
         score = _compute_security_score(server)
-        # 20 + 15 + 15 + 12 + 0 = 62
-        assert score == 62
+        # (20+15+15+12+0) * 100/85 = 72
+        assert score == 72
 
 
 # ── Protocol Score with Smoke Test ──────────────────────────────────────

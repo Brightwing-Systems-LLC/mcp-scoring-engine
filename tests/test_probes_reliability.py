@@ -54,18 +54,18 @@ class TestComputeReliabilityScore:
         """Without p95, uses 70/30 blend."""
         data = ReliabilityData(uptime_pct=99.0, latency_p50_ms=150)
         score = compute_reliability_score(data)
-        # p50=150ms → 95, 99.0 * 0.7 + 95 * 0.3 = 69.3 + 28.5 = 97.8 → 97
-        assert score == 97
+        # p50=150ms → 95, 99.0 * 0.8 + 95 * 0.2 = 79.2 + 19.0 = 98.2 → 98
+        assert score == 98
 
     def test_full_blend_with_p95(self):
-        """With p95, uses 60/25/15 blend."""
+        """With p95, uses 75/15/10 blend."""
         data = ReliabilityData(
             uptime_pct=99.0, latency_p50_ms=150, latency_p95_ms=500, probe_count=20
         )
         score = compute_reliability_score(data)
         # p50=150→95, p95=500→70
-        # 99*0.60 + 95*0.25 + 70*0.15 = 59.4 + 23.75 + 10.5 = 93.65 → 93
-        assert score == 93
+        # 99*0.75 + 95*0.15 + 70*0.10 = 74.25 + 14.25 + 7.0 = 95.5 → 95
+        assert score == 95
 
     def test_p95_tail_latency_penalty(self):
         """Server with good p50 but terrible p95 scores lower."""
@@ -78,10 +78,10 @@ class TestComputeReliabilityScore:
         good_score = compute_reliability_score(good_tail)
         bad_score = compute_reliability_score(bad_tail)
         assert good_score > bad_score
-        # good: 99*0.6 + 100*0.25 + 90*0.15 = 59.4 + 25 + 13.5 = 97.9 → 97
-        # bad:  99*0.6 + 100*0.25 + 10*0.15 = 59.4 + 25 + 1.5 = 85.9 → 85
-        assert good_score == 97
-        assert bad_score == 85
+        # good: 99*0.75 + 100*0.15 + 90*0.10 = 74.25 + 15 + 9 = 98.25 → 98
+        # bad:  99*0.75 + 100*0.15 + 10*0.10 = 74.25 + 15 + 1 = 90.25 → 90
+        assert good_score == 98
+        assert bad_score == 90
 
     def test_latency_only_cli_mode(self):
         """CLI mode: latency only, probe_count=0."""
@@ -124,8 +124,8 @@ class TestComputeReliabilityScore:
 
     def test_low_uptime_fast_latency(self):
         data = ReliabilityData(uptime_pct=50.0, latency_p50_ms=100)
-        # 50 * 0.7 + 100 * 0.3 = 35 + 30 = 65
-        assert compute_reliability_score(data) == 65
+        # 50 * 0.8 + 100 * 0.2 = 40 + 20 = 60
+        assert compute_reliability_score(data) == 60
 
 
 class TestMinimumProbeCount:
